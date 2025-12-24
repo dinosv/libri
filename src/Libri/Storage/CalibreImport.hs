@@ -96,6 +96,16 @@ getAuthors conn bookId = do
     \ORDER BY bal.id" (Only bookId) :: IO [Only Text]
   pure $ map fromOnly rows
 
+-- | Get identifiers for a book (ISBN, Amazon, Google, etc.)
+getIdentifiers :: Connection -> Int -> IO [(Text, Text)]
+getIdentifiers conn bookId = do
+  result <- try $ query conn
+    "SELECT type, val FROM identifiers WHERE book = ?"
+    (Only bookId) :: IO (Either SomeException [(Text, Text)])
+  case result of
+    Left _ -> pure []  -- Table might not exist in old Calibre versions
+    Right rows -> pure rows
+
 -- | Get tags for a book
 getTags :: Connection -> Int -> IO [Text]
 getTags conn bookId = do
