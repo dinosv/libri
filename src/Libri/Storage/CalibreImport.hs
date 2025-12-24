@@ -1,6 +1,8 @@
 module Libri.Storage.CalibreImport
   ( importFromCalibre
   , CalibreBook (..)
+  , extractIsbn
+  , partitionIdentifiers
   ) where
 
 import Control.Exception (try, SomeException)
@@ -218,3 +220,23 @@ parseDate t =
 valueToText :: Value -> Maybe Text
 valueToText (String t) = Just t
 valueToText _ = Nothing
+
+-- | Extract ISBN from a list of identifiers, preferring ISBN-13
+extractIsbn :: [(Text, Text)] -> Maybe Text
+extractIsbn ids =
+  let isbns = [val | (typ, val) <- ids, typ == "isbn"]
+      isbn13s = filter (\v -> T.length v == 13) isbns
+      isbn10s = filter (\v -> T.length v == 10) isbns
+   in case isbn13s of
+        (x : _) -> Just x
+        [] -> case isbn10s of
+          (x : _) -> Just x
+          [] -> Nothing
+
+-- | Partition identifiers into ISBN and other identifiers
+-- Returns (Maybe ISBN, Map of prefixed identifiers)
+partitionIdentifiers :: [(Text, Text)] -> (Maybe Text, Map.Map Text Text)
+partitionIdentifiers ids =
+  let maybeIsbn = extractIsbn ids
+      others = [(T.pack "identifier:" <> typ, val) | (typ, val) <- ids, typ /= "isbn"]
+   in (maybeIsbn, Map.fromList others)
