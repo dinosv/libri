@@ -1,0 +1,24 @@
+{
+  "id": "fuzzy-search-fix",
+  "slug": "fuzzy-search-fix",
+  "started": "2025-12-12T12:00:00Z",
+  "lastUpdated": "2025-12-12T12:30:00Z",
+  "status": "draft",
+  "phase": "complete",
+  "originalRequest": "Existe aún un problema relacionado con el buscador fuzzy, que sigue entregando datos irrelevantes.",
+  "progress": {
+    "discovery": { "generated": true, "answered": 6, "total": 6 },
+    "analysis": { "status": "complete" },
+    "expert": { "generated": true, "answered": 5, "total": 5 }
+  },
+  "contextFiles": [
+    "src/Libri/Search/Fuzzy.hs",
+    "src/Libri/TUI/App.hs",
+    "src/Libri/CLI/Commands.hs",
+    "src/Libri/Types.hs"
+  ],
+  "relatedFeatures": [],
+  "toolsAvailable": ["serena", "context7", "WebSearch"],
+  "recommendedSkill": "developer",
+  "skillRationale": "Bugfix with algorithm changes in 3 Haskell files"
+}

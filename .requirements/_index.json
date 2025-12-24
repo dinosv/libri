@@ -1,0 +1,14 @@
+{
+  "calibre-book-manager": {
+    "created": "2025-12-11T20:30:00Z",
+    "status": "done",
+    "lastModified": "2025-12-11T21:45:00Z",
+    "lastWorked": "2025-12-11T21:45:00Z",
+    "folder": ".requirements/2025-12-11-2030-calibre-book-manager/",
+    "projectName": "libri",
+    "relatedFeatures": [],
+    "filesInvolved": 15,
+    "recommendedSkill": "developer",
+    "description": "Haskell TUI/CLI tool for managing physical book collection, replacing Calibre"
+  }
+}

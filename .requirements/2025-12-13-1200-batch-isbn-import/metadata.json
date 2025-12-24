@@ -1,0 +1,24 @@
+{
+  "id": "batch-isbn-import",
+  "slug": "batch-isbn-import",
+  "started": "2025-12-13T12:00:00Z",
+  "lastUpdated": "2025-12-13T12:30:00Z",
+  "status": "draft",
+  "phase": "complete",
+  "originalRequest": "agregar opción para importación de libros vía batch, a través de un archivo de texto con números de ISBN",
+  "progress": {
+    "discovery": { "generated": true, "answered": 6, "total": 6 },
+    "analysis": { "status": "complete" },
+    "expert": { "generated": true, "answered": 5, "total": 5 }
+  },
+  "contextFiles": [
+    "src/Libri/CLI/Commands.hs",
+    "src/Libri/ISBN/OpenLibrary.hs",
+    "src/Libri/Storage/Index.hs",
+    "src/Libri/Types.hs"
+  ],
+  "relatedFeatures": ["runImportCalibre", "runAdd", "fetchByISBN", "lookupByISBN"],
+  "toolsAvailable": ["serena", "context7", "WebSearch"],
+  "recommendedSkill": "superpowers:test-driven-development",
+  "skillRationale": "Feature involves new CLI command, file parsing, API integration, and user interaction - all highly testable components that benefit from TDD approach"
+}

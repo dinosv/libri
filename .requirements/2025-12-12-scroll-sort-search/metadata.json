@@ -1,0 +1,25 @@
+{
+  "id": "scroll-sort-search",
+  "slug": "scroll-sort-search",
+  "started": "2025-12-12T00:00:00Z",
+  "lastUpdated": "2025-12-12T00:00:00Z",
+  "status": "ready",
+  "phase": "complete",
+  "originalRequest": "Please add scrolling in the main window, also the possibility to sort by author, title and date of publication. Also improve the search systems, it looks broken",
+  "progress": {
+    "discovery": { "generated": true, "answered": 6, "total": 6 },
+    "analysis": { "status": "complete" },
+    "expert": { "generated": true, "answered": 5, "total": 5 }
+  },
+  "contextFiles": [
+    "src/Libri/Types.hs",
+    "src/Libri/TUI/Views/BookList.hs",
+    "src/Libri/TUI/App.hs",
+    "src/Libri/Search/Fuzzy.hs",
+    "src/Libri/TUI/Widgets/Common.hs"
+  ],
+  "relatedFeatures": [],
+  "toolsAvailable": ["serena", "context7", "WebSearch"],
+  "recommendedSkill": "developer",
+  "skillRationale": "Code implementation with multiple file modifications required"
+}

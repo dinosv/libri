@@ -1,0 +1,19 @@
+{
+  "id": "edit-comments-rating-custom",
+  "slug": "edit-comments-rating-custom",
+  "started": "2025-12-12T00:00:00Z",
+  "lastUpdated": "2025-12-12T00:00:00Z",
+  "status": "active",
+  "phase": "discovery",
+  "originalRequest": "add the options to edit comments, rating, custom fields",
+  "progress": {
+    "discovery": { "generated": false, "answered": 0, "total": 0 },
+    "analysis": { "status": "pending" },
+    "expert": { "generated": false, "answered": 0, "total": 0 }
+  },
+  "contextFiles": [],
+  "relatedFeatures": [],
+  "toolsAvailable": ["serena", "context7", "WebSearch"],
+  "recommendedSkill": null,
+  "skillRationale": null
+}

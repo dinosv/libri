@@ -1,0 +1,29 @@
+{
+  "id": "calibre-book-manager",
+  "slug": "calibre-book-manager",
+  "projectName": "libri",
+  "started": "2025-12-11T20:30:00Z",
+  "lastUpdated": "2025-12-11T21:00:00Z",
+  "status": "draft",
+  "phase": "complete",
+  "originalRequest": "A TUI/CLI tool for managing a physical book collection; I will start from a calibre database.",
+  "projectType": "new-project",
+  "progress": {
+    "discovery": { "generated": true, "answered": 10, "total": 10 },
+    "analysis": { "status": "completed", "reason": "technology research for new project" },
+    "expert": { "generated": true, "answered": 8, "total": 8 }
+  },
+  "contextFiles": [],
+  "relatedFeatures": [],
+  "toolsAvailable": ["context7", "WebSearch"],
+  "recommendedSkill": "developer",
+  "skillRationale": "New Haskell application requiring TUI development, CLI parsing, YAML I/O, HTTP client, SQLite reading, and fuzzy search implementation",
+  "techStack": {
+    "language": "Haskell",
+    "tuiFramework": "brick",
+    "storage": "YAML (one file per book)",
+    "cliStyle": "flag-based",
+    "isbnApi": "Open Library",
+    "search": "full-text fuzzy"
+  }
+}

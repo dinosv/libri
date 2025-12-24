@@ -1,0 +1,10 @@
+packages: .
+
+-- Allow newer versions of dependencies if needed
+allow-newer: all
+
+-- Optimization for development
+optimization: 1
+
+-- Enable profiling for debugging if needed
+-- profiling: True
