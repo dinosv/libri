@@ -90,6 +90,7 @@ test-suite libri-test
     other-modules:    TypesSpec
                     , SearchSpec
                     , BatchImportSpec
+                    , CalibreImportSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3
