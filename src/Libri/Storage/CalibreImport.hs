@@ -1,5 +1,6 @@
 module Libri.Storage.CalibreImport
   ( importFromCalibre
+  , saveImportedBooks
   , CalibreBook (..)
   , extractIsbn
   , partitionIdentifiers
@@ -16,7 +17,8 @@ import Data.Time (Day, UTCTime, getCurrentTime, parseTimeM, defaultTimeLocale)
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
 import Lens.Micro ((&), (.~))
-import Libri.Types
+import Libri.Types (Book (..), Config, LibriError (..), bookFilename)
+import Libri.Storage.Yaml (loadBook, saveBook, mergeBooks, getDataDir)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
@@ -258,3 +260,17 @@ partitionIdentifiers ids =
   let maybeIsbn = extractIsbn ids
       others = [(T.pack "identifier:" <> typ, val) | (typ, val) <- ids, typ /= "isbn"]
    in (maybeIsbn, Map.fromList others)
+
+-- | Save imported books, merging with existing if present
+saveImportedBooks :: Config -> [Book] -> IO [Either LibriError ()]
+saveImportedBooks cfg books = do
+  dir <- getDataDir cfg
+  let booksDir = dir </> "books"
+  forM books $ \book -> do
+    let filename = bookFilename book
+        path = booksDir </> filename
+    existingResult <- loadBook path
+    let bookToSave = case existingResult of
+          Right existing -> mergeBooks book existing
+          Left _ -> book  -- No existing book, use as-is
+    saveBook cfg bookToSave
