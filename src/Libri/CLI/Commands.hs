@@ -20,7 +20,7 @@ import Lens.Micro ((&), (.~), (^.))
 import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults, normalizeISBN)
 import Libri.ISBN.OpenLibrary (fetchByISBN)
 import Libri.Search.Fuzzy (searchBooks)
-import Libri.Storage.CalibreImport (importFromCalibre)
+import Libri.Storage.CalibreImport (importFromCalibre, saveImportedBooks)
 import Libri.Storage.Index (BookIndex, buildIndex, lookupByISBN, lookupById, allBooks)
 import Libri.Storage.Yaml
 import Libri.Types
@@ -353,15 +353,24 @@ runImportCalibre cfg path = do
       exitFailure
     Right books -> do
       TIO.putStrLn $ "Found " <> T.pack (show (length books)) <> " books"
-      -- Save each book
-      forM_ books $ \book -> do
-        saveResult <- saveBook cfg book
+      -- Save books with merge support
+      results <- saveImportedBooks cfg books
+
+      -- Report results
+      let successes = length [() | Right () <- results]
+          failures = length [() | Left _ <- results]
+
+      forM_ (zip books results) $ \(book, saveResult) ->
         case saveResult of
           Left err ->
             hPutStrLn stderr $ "Error saving '" <> T.unpack (book ^. title) <> "': " <> show err
           Right () ->
             TIO.putStrLn $ "  Imported: " <> (book ^. title)
-      TIO.putStrLn "\nImport complete!"
+
+      TIO.putStrLn ""
+      TIO.putStrLn $ "Import complete! " <> T.pack (show successes) <> " books saved successfully"
+      when (failures > 0) $
+        TIO.putStrLn $ "  " <> T.pack (show failures) <> " books failed to save"
 
 -- | List all books
 runList :: Config -> IO ()
