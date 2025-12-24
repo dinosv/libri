@@ -74,6 +74,7 @@ importBooks dbPath = do
   -- Convert each book
   books <- forM calibreBooks $ \cb -> do
     authors <- getAuthors conn (cbId cb)
+    identifiers <- getIdentifiers conn (cbId cb)
     tags <- getTags conn (cbId cb)
     series <- getSeries conn (cbId cb)
     publisher <- getPublisher conn (cbId cb)
@@ -81,7 +82,7 @@ importBooks dbPath = do
     comments <- getComments conn (cbId cb)
     customCols <- getCustomColumns conn (cbId cb)
 
-    convertBook cb authors tags series publisher rating comments customCols
+    convertBook cb authors identifiers tags series publisher rating comments customCols
 
   close conn
   pure books
@@ -181,24 +182,31 @@ getCustomValue conn tableName bookId datatype = do
 -- | Convert a Calibre book to our Book type
 convertBook
   :: CalibreBook
-  -> [Text]
-  -> [Text]
-  -> Maybe Text
-  -> Maybe Text
-  -> Maybe Int
-  -> Maybe Text
+  -> [Text]           -- authors
+  -> [(Text, Text)]   -- identifiers
+  -> [Text]           -- tags
+  -> Maybe Text       -- series
+  -> Maybe Text       -- publisher
+  -> Maybe Int        -- rating
+  -> Maybe Text       -- comments
   -> Map.Map Text Value
   -> IO Book
-convertBook cb authors tags series publisher rating comments customCols = do
+convertBook cb authors identifiers tags series publisher rating comments customCols = do
   now <- getCurrentTime
 
-  -- Try to parse the publication date
   let pubDate = cbPubdate cb >>= parseDate
+
+  -- Extract ISBN and other identifiers
+  let (maybeIsbn, otherIds) = partitionIdentifiers identifiers
+      -- Merge other identifiers into custom, converting Text to Value
+      customWithIds = Map.union
+        (Map.map String otherIds)
+        (Map.delete "location" customCols)
 
   pure
     Book
       { _bookId = T.pack $ show (cbId cb)
-      , _isbn = Nothing  -- Calibre stores ISBN in identifiers table, would need separate query
+      , _isbn = maybeIsbn
       , _title = cbTitle cb
       , _authors = authors
       , _series = series
@@ -209,7 +217,7 @@ convertBook cb authors tags series publisher rating comments customCols = do
       , _rating = rating
       , _comments = comments
       , _location = Map.lookup "location" customCols >>= valueToText
-      , _custom = Map.delete "location" customCols
+      , _custom = customWithIds
       , _added = fromMaybe now (cbTimestamp cb)
       , _modified = cbLastModified cb
       }
