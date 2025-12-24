@@ -91,6 +91,7 @@ test-suite libri-test
                     , SearchSpec
                     , BatchImportSpec
                     , CalibreImportSpec
+                    , YamlSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3

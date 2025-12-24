@@ -5,6 +5,7 @@ import qualified TypesSpec
 import qualified SearchSpec
 import qualified BatchImportSpec
 import qualified CalibreImportSpec
+import qualified YamlSpec
 
 main :: IO ()
 main = hspec $ do
@@ -12,3 +13,4 @@ main = hspec $ do
   SearchSpec.spec
   BatchImportSpec.spec
   CalibreImportSpec.spec
+  YamlSpec.spec
