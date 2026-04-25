@@ -26,6 +26,7 @@ library
                     , Libri.Storage.CalibreImport
                     , Libri.CLI.Commands
                     , Libri.CLI.BatchImport
+                    , Libri.CLI.Enrich
                     , Libri.Search.Fuzzy
                     , Libri.Text.Normalize
                     , Libri.ISBN.OpenLibrary
@@ -99,6 +100,7 @@ test-suite libri-test
                     , NormalizeSpec
                     , CommandBarSpec
                     , GroupedListSpec
+                    , EnrichSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3

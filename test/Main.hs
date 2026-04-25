@@ -9,6 +9,7 @@ import qualified YamlSpec
 import qualified NormalizeSpec
 import qualified CommandBarSpec
 import qualified GroupedListSpec
+import qualified EnrichSpec
 
 main :: IO ()
 main = hspec $ do
@@ -20,3 +21,4 @@ main = hspec $ do
   NormalizeSpec.spec
   CommandBarSpec.spec
   GroupedListSpec.spec
+  EnrichSpec.spec
