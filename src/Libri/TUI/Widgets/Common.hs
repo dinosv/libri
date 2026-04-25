@@ -12,6 +12,8 @@ module Libri.TUI.Widgets.Common
   , helpAttr
   , errorAttr
   , searchAttr
+  , commandBarAttr
+  , sectionHeaderAttr
     -- * Common Widgets
   , bordered
   , titledBorder
@@ -25,7 +27,6 @@ import Brick.Widgets.Border
 import Brick.Widgets.Border.Style
 import Brick.Widgets.Center
 import Data.Text (Text)
-import qualified Data.Text as T
 import Graphics.Vty.Attributes
 
 -- | Resource names for widgets
@@ -34,6 +35,7 @@ data Name
   | BookListViewport
   | BookDetails
   | SearchField
+  | CommandBarField
   | AddForm
   | EditForm
   | LocationList
@@ -52,6 +54,8 @@ theMap = attrMap defAttr
   , (helpAttr, fg brightBlack)
   , (errorAttr, fg red `withStyle` bold)
   , (searchAttr, fg brightGreen)
+  , (commandBarAttr, fg brightYellow)
+  , (sectionHeaderAttr, fg brightCyan `withStyle` bold)
   , (borderAttr, fg brightBlack)
   ]
 
@@ -82,6 +86,12 @@ errorAttr = attrName "error"
 
 searchAttr :: AttrName
 searchAttr = attrName "search"
+
+commandBarAttr :: AttrName
+commandBarAttr = attrName "commandBar"
+
+sectionHeaderAttr :: AttrName
+sectionHeaderAttr = attrName "sectionHeader"
 
 -- | Add a unicode border around a widget
 bordered :: Widget n -> Widget n
