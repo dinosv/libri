@@ -7,6 +7,8 @@ import qualified BatchImportSpec
 import qualified CalibreImportSpec
 import qualified YamlSpec
 import qualified NormalizeSpec
+import qualified CommandBarSpec
+import qualified GroupedListSpec
 
 main :: IO ()
 main = hspec $ do
@@ -16,3 +18,5 @@ main = hspec $ do
   CalibreImportSpec.spec
   YamlSpec.spec
   NormalizeSpec.spec
+  CommandBarSpec.spec
+  GroupedListSpec.spec

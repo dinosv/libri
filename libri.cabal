@@ -36,6 +36,8 @@ library
                     , Libri.TUI.Views.MoveBook
                     , Libri.TUI.Views.Search
                     , Libri.TUI.Widgets.Common
+                    , Libri.TUI.CommandBar
+                    , Libri.TUI.Views.GroupedList
     build-depends:    base ^>=4.17 || ^>=4.18 || ^>=4.19 || ^>=4.20
                     , text >=2.0 && <3
                     , bytestring >=0.11 && <0.13
@@ -95,6 +97,8 @@ test-suite libri-test
                     , CalibreImportSpec
                     , YamlSpec
                     , NormalizeSpec
+                    , CommandBarSpec
+                    , GroupedListSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3
