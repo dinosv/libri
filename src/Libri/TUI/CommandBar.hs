@@ -63,13 +63,22 @@ parseCommand input =
     "clear"  -> CmdClear
     _        -> CmdUnknown stripped
 
+commandKeywords :: [Text]
+commandKeywords = ["tag", "author", "group", "sort", "clear"]
+
+groupSubOptions :: [Text]
+groupSubOptions = ["tag", "author", "none"]
+
+sortSubOptions :: [Text]
+sortSubOptions = ["title", "author", "date"]
+
 completeNext :: CommandBarState -> CommandBarState
 completeNext cbs =
   let input = cbsInput cbs
       (cmd, rest) = T.breakOn " " input
-      hasSpace = T.length rest > 0
+      hasSpace = not (T.null rest)
   in if not hasSpace
-       then cbs
+       then completeFrom commandKeywords cmd cbs (\chosen -> chosen <> " ")
        else
          let prefix = if cbsCompletionIndex cbs == Nothing
                         then T.strip (T.drop 1 rest)
@@ -77,23 +86,29 @@ completeNext cbs =
              candidates = case T.toLower cmd of
                "tag"    -> cbsTagCandidates cbs
                "author" -> cbsAuthorCandidates cbs
+               "group"  -> groupSubOptions
+               "sort"   -> sortSubOptions
                _        -> []
-             normPrefix = normalizeText prefix
-             matches = if T.null normPrefix
-                         then candidates
-                         else filter (\c -> normPrefix `T.isPrefixOf` normalizeText c) candidates
-         in if null matches
-              then cbs
-              else
-                let idx = case cbsCompletionIndex cbs of
-                      Nothing -> 0
-                      Just i  -> (i + 1) `mod` length matches
-                    chosen = matches !! idx
-                in cbs
-                  { cbsInput = cmd <> " " <> chosen
-                  , cbsCompletionIndex = Just idx
-                  , cbsLastPrefix = prefix
-                  }
+         in completeFrom candidates prefix cbs (\chosen -> cmd <> " " <> chosen)
+
+completeFrom :: [Text] -> Text -> CommandBarState -> (Text -> Text) -> CommandBarState
+completeFrom candidates prefix cbs buildInput =
+  let normPrefix = normalizeText prefix
+      matches = if T.null normPrefix
+                  then candidates
+                  else filter (\c -> normPrefix `T.isPrefixOf` normalizeText c) candidates
+  in if null matches
+       then cbs
+       else
+         let idx = case cbsCompletionIndex cbs of
+               Nothing -> 0
+               Just i  -> (i + 1) `mod` length matches
+             chosen = matches !! idx
+         in cbs
+           { cbsInput = buildInput chosen
+           , cbsCompletionIndex = Just idx
+           , cbsLastPrefix = prefix
+           }
 
 renderCommandBar :: CommandBarState -> Widget Name
 renderCommandBar cbs =
