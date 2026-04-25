@@ -195,7 +195,7 @@ mainLayout st visibleBooks selectedBook msg mCbs =
               vBox
                 [ padAll 1 $ renderBookArea st visibleBooks
                 , hBorder
-                , renderSearchOrCommandBar st mCbs
+                , renderSearchLine st
                 ]
         , vBorder
         , -- Right: Book details
@@ -205,6 +205,8 @@ mainLayout st visibleBooks selectedBook msg mCbs =
     , hBorder
     , -- Footer with status/help
       renderFooter st msg
+    , -- Command bar (always at the very bottom when active)
+      renderCommandLine st mCbs
     ]
 
 -- | Search indicator in title
@@ -230,14 +232,19 @@ filterIndicator st =
     Just (FilterTag t)    -> " [tag:" <> t <> "]"
     Just (FilterAuthor a) -> " [author:" <> a <> "]"
 
-renderSearchOrCommandBar :: AppState -> Maybe CommandBarState -> Widget Name
-renderSearchOrCommandBar st mCbs =
+renderSearchLine :: AppState -> Widget Name
+renderSearchLine st =
   padAll 1 $ case st ^. currentView of
-    ViewSearch  -> renderSearchBar (st ^. searchQuery) True
+    ViewSearch -> renderSearchBar (st ^. searchQuery) True
+    _          -> renderSearchBar (st ^. searchQuery) False
+
+renderCommandLine :: AppState -> Maybe CommandBarState -> Widget Name
+renderCommandLine st mCbs =
+  case st ^. currentView of
     ViewCommand -> case mCbs of
-      Just cbs -> renderCommandBar cbs
-      Nothing  -> renderSearchBar (st ^. searchQuery) False
-    _ -> renderSearchBar (st ^. searchQuery) False
+      Just cbs -> padLeftRight 1 $ renderCommandBar cbs
+      Nothing  -> emptyWidget
+    _ -> emptyWidget
 
 -- | Render the footer
 renderFooter :: AppState -> Maybe Text -> Widget Name
@@ -880,6 +887,8 @@ executeCommand cmd st = do
                , tuiCommandBarState = Nothing
                , tuiMessage = Just "Filters and grouping cleared"
                }
+    CmdNeedsArg _cmd hint ->
+      put $ st { tuiMessage = Just $ "Usage: " <> hint }
     CmdUnknown t ->
       put $ st { tuiAppState = appSt & currentView .~ ViewList
                , tuiCommandBarState = Nothing

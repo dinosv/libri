@@ -21,6 +21,7 @@ data Command
   | CmdGroupNone
   | CmdSort SortField
   | CmdClear
+  | CmdNeedsArg Text Text
   | CmdUnknown Text
   deriving (Show, Eq)
 
@@ -49,16 +50,20 @@ parseCommand input =
       arg = T.strip (T.drop 1 rest)
   in case T.toLower cmd of
     "tag"    | not (T.null arg) -> CmdFilterTag arg
+             | otherwise        -> CmdNeedsArg "tag" "tag <name> -- e.g. tag Philosophy"
     "author" | not (T.null arg) -> CmdFilterAuthor arg
+             | otherwise        -> CmdNeedsArg "author" "author <name> -- e.g. author Eco"
     "group"  -> case T.toLower arg of
       "tag"    -> CmdGroup GroupByTag
       "author" -> CmdGroup GroupByAuthor
       "none"   -> CmdGroupNone
+      ""       -> CmdNeedsArg "group" "group <tag|author|none>"
       _        -> CmdUnknown stripped
     "sort"   -> case T.toLower arg of
       "title"  -> CmdSort SortByTitle
       "author" -> CmdSort SortByAuthor
       "date"   -> CmdSort SortByDate
+      ""       -> CmdNeedsArg "sort" "sort <title|author|date>"
       _        -> CmdUnknown stripped
     "clear"  -> CmdClear
     _        -> CmdUnknown stripped

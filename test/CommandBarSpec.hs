@@ -32,6 +32,21 @@ spec = describe "CommandBar" $ do
       parseCommand "tag  Philosophy  " `shouldBe` CmdFilterTag "Philosophy"
     it "handles empty input" $
       parseCommand "" `shouldBe` CmdUnknown ""
+    it "returns needs-arg for group without argument" $ do
+      let result = parseCommand "group"
+      case result of
+        CmdNeedsArg _ _ -> pure ()
+        other -> expectationFailure $ "expected CmdNeedsArg, got " <> show other
+    it "returns needs-arg for tag without argument" $ do
+      let result = parseCommand "tag"
+      case result of
+        CmdNeedsArg _ _ -> pure ()
+        other -> expectationFailure $ "expected CmdNeedsArg, got " <> show other
+    it "returns needs-arg for sort without argument" $ do
+      let result = parseCommand "sort"
+      case result of
+        CmdNeedsArg _ _ -> pure ()
+        other -> expectationFailure $ "expected CmdNeedsArg, got " <> show other
 
   describe "tab completion" $ do
     let candidates = ["Art", "History", "Philosophy", "Poetry", "Politics"]
