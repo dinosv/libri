@@ -82,6 +82,12 @@ spec = describe "Fuzzy Search" $ do
     it "returns lower score for different strings" $ do
       fuzzyMatch "hello" "world" `shouldSatisfy` (< 0.5)
 
+    it "returns high score for prefix match" $ do
+      fuzzyMatch "mod" "modulor" `shouldSatisfy` (>= 0.85)
+
+    it "returns high score for longer prefix match" $ do
+      fuzzyMatch "prog" "programming" `shouldSatisfy` (>= 0.85)
+
   describe "searchBooks" $ do
     it "ranks exact title match first" $ do
       let results = searchBooks testThreshold "Pragmatic" testBooks

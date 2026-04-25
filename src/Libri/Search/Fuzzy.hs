@@ -129,7 +129,7 @@ fuzzyMatch :: Text -> Text -> Double
 fuzzyMatch query target
   | T.null query || T.null target = 0
   | query == target = 1.0
-  -- Only count substring matches if the substring is long enough
+  | T.length query >= minQueryLength && query `T.isPrefixOf` target = 0.85
   | T.length query >= minSubstringLength && query `T.isInfixOf` target = 0.9
   | T.length target >= minSubstringLength && target `T.isInfixOf` query = 0.8
   | otherwise = levenshteinSimilarity query target
