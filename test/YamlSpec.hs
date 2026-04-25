@@ -15,7 +15,7 @@ spec = describe "YAML Storage" $ do
     let testTime1 = UTCTime (fromGregorian 2025 1 1) 0
         testTime2 = UTCTime (fromGregorian 2025 1 2) 0
         calibreBook = Book
-          { _bookId = "42"
+          { _bookId = "calibre-42"
           , _isbn = Just "9780134685991"
           , _title = "Updated Title"
           , _authors = ["New Author"]
@@ -74,3 +74,4 @@ spec = describe "YAML Storage" $ do
     it "keeps bookId from existing book" $ do
       let merged = mergeBooks calibreBook existingBook
       _bookId merged `shouldBe` "42"
+      _bookId merged `shouldNotBe` "calibre-42"

@@ -4,7 +4,6 @@ import Libri.CLI.Commands
 import Libri.Storage.Yaml (loadConfig, initDataDir)
 import Libri.TUI.App (runTUI)
 import Libri.Types (defaultConfig)
-import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 main :: IO ()

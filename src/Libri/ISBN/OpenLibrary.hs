@@ -1,5 +1,7 @@
 module Libri.ISBN.OpenLibrary
   ( fetchByISBN
+  , fetchByISBNWith
+  , newISBNManager
   , OpenLibraryBook (..)
   ) where
 
@@ -7,10 +9,10 @@ import Control.Exception (try, SomeException)
 import Control.Monad (forM)
 import Data.Aeson
 import Data.Aeson.Types (Parser)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (Day, UTCTime, getCurrentTime, parseTimeM, defaultTimeLocale)
+import Data.Time (Day, getCurrentTime, parseTimeM, defaultTimeLocale)
 import Libri.Types
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -75,16 +77,25 @@ parseDescription (Just (Object o)) =
     Error _ -> Nothing
 parseDescription _ = Nothing
 
--- | Fetch book metadata by ISBN from Open Library
+-- | Create a reusable HTTP manager for ISBN lookups
+newISBNManager :: IO Manager
+newISBNManager = newManager tlsManagerSettings
+
+-- | Fetch book metadata by ISBN (creates a fresh HTTP manager)
 fetchByISBN :: Text -> IO (Either LibriError Book)
 fetchByISBN isbnText = do
+  mgr <- newISBNManager
+  fetchByISBNWith mgr isbnText
+
+-- | Fetch book metadata by ISBN using an existing HTTP manager
+fetchByISBNWith :: Manager -> Text -> IO (Either LibriError Book)
+fetchByISBNWith mgr isbnText = do
   let cleanISBN = T.filter (\c -> c /= '-' && c /= ' ') isbnText
       url = "https://openlibrary.org/isbn/" <> T.unpack cleanISBN <> ".json"
 
   result <- try $ do
-    manager <- newManager tlsManagerSettings
     request <- parseRequest url
-    response <- httpLbs request manager
+    response <- httpLbs request mgr
 
     let status = statusCode $ responseStatus response
     if status == 404
@@ -95,8 +106,7 @@ fetchByISBN isbnText = do
           case eitherDecode (responseBody response) of
             Left err -> pure $ Left $ ParseError url err
             Right olBook -> do
-              -- Fetch author names from author keys
-              authorNames <- fetchAuthorNames manager (olAuthorKeys olBook)
+              authorNames <- fetchAuthorNames mgr (olAuthorKeys olBook)
               book <- convertToBook cleanISBN olBook authorNames
               pure $ Right book
 

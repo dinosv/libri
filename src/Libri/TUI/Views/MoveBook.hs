@@ -8,7 +8,6 @@ import Brick hiding (Location)
 import Brick.Widgets.Border
 import Brick.Widgets.Center
 import Data.Text (Text)
-import qualified Data.Text as T
 import Lens.Micro ((^.))
 import Libri.TUI.Widgets.Common
 import Libri.Types (Book, BookId, Location, bookId, title, location)

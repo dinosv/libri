@@ -1,26 +1,21 @@
 module Libri.TUI.Views.BookList
   ( renderBookList
-  , handleBookListEvent
   ) where
 
 import Brick
-import Brick.Widgets.Border
 import Brick.Widgets.Center
-import Brick.Widgets.Core (viewport, visible, withVScrollBars)
-import Brick.Types (ViewportType(Vertical))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Graphics.Vty.Input.Events
-import Lens.Micro ((^.), (&), (.~), (%~))
+import Lens.Micro ((^.))
 import Libri.TUI.Widgets.Common
 import Libri.Types
 
 -- | Render the book list view
 renderBookList :: [Book] -> Int -> Widget Name
-renderBookList books selectedIdx =
-  if null books
+renderBookList bks selectedIdx =
+  if null bks
     then renderEmptyList
-    else renderBooks books selectedIdx
+    else renderBooks bks selectedIdx
 
 -- | Render when no books exist
 renderEmptyList :: Widget Name
@@ -35,10 +30,10 @@ renderEmptyList =
 
 -- | Render the list of books with viewport and scroll bar
 renderBooks :: [Book] -> Int -> Widget Name
-renderBooks books selectedIdx =
+renderBooks bks selectedIdx =
   withVScrollBars OnRight $
     viewport BookListViewport Vertical $
-      vBox $ zipWith (renderBookRow selectedIdx) [0..] books
+      vBox $ zipWith (renderBookRow selectedIdx) [0..] bks
 
 -- | Render a single book row
 -- Uses 'visible' on selected row to enable auto-scroll in viewport
@@ -73,31 +68,3 @@ truncateText maxLen t
   | T.length t <= maxLen = t
   | otherwise = T.take (maxLen - 1) t <> "…"
 
--- | Handle events in the book list
-handleBookListEvent :: BrickEvent Name e -> AppState -> EventM Name AppState ()
-handleBookListEvent ev st = case ev of
-  VtyEvent (EvKey KUp []) ->
-    put $ st & selectedIndex %~ max 0 . subtract 1
-
-  VtyEvent (EvKey KDown []) ->
-    put $ st & selectedIndex %~ min (length (st ^. books) - 1) . (+ 1)
-
-  VtyEvent (EvKey (KChar 'k') []) ->
-    put $ st & selectedIndex %~ max 0 . subtract 1
-
-  VtyEvent (EvKey (KChar 'j') []) ->
-    put $ st & selectedIndex %~ min (length (st ^. books) - 1) . (+ 1)
-
-  VtyEvent (EvKey KHome []) ->
-    put $ st & selectedIndex .~ 0
-
-  VtyEvent (EvKey KEnd []) ->
-    put $ st & selectedIndex .~ max 0 (length (st ^. books) - 1)
-
-  VtyEvent (EvKey KPageUp []) ->
-    put $ st & selectedIndex %~ max 0 . subtract 10
-
-  VtyEvent (EvKey KPageDown []) ->
-    put $ st & selectedIndex %~ min (length (st ^. books) - 1) . (+ 10)
-
-  _ -> pure ()

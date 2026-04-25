@@ -3,9 +3,7 @@ module Libri.TUI.Views.BookDetails
   ) where
 
 import Brick
-import Brick.Widgets.Border
 import Brick.Widgets.Center (center)
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Aeson (Value (..))
 import Data.Text (Text)

@@ -10,16 +10,14 @@ module Libri.TUI.Views.AddBook
   ) where
 
 import Brick
-import Brick.Widgets.Border
+import Brick.Widgets.Border (hBorder)
 import Brick.Widgets.Center
-import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Value(..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (getCurrentTime)
-import Graphics.Vty.Input.Events
-import Lens.Micro ((^.), (&), (.~))
+import Data.Time (UTCTime)
+import Lens.Micro ((^.), (&))
 import Libri.TUI.Widgets.Common
 import Libri.Types
 
@@ -38,8 +36,9 @@ data AddBookState = AddBookState
   , absCustomFieldIdx :: Int  -- Selected custom field index
   , absEditingCustom :: Bool  -- Whether in custom field mode
   , absCurrentField :: Int    -- Which field is selected (0-9)
-  , absIsEdit :: Bool         -- True if editing existing book
+  , absIsEdit :: Bool
   , absOriginalId :: Maybe BookId
+  , absOriginalAdded :: Maybe UTCTime
   }
   deriving (Show)
 
@@ -61,6 +60,7 @@ initAddBookState = AddBookState
   , absCurrentField = 0
   , absIsEdit = False
   , absOriginalId = Nothing
+  , absOriginalAdded = Nothing
   }
 
 -- | Initialize edit state from existing book
@@ -81,6 +81,7 @@ initEditBookState book = AddBookState
   , absCurrentField = 0
   , absIsEdit = True
   , absOriginalId = Just (book ^. bookId)
+  , absOriginalAdded = Just (book ^. added)
   }
 
 -- | Convert Aeson Value to Text for display
@@ -268,60 +269,6 @@ filterRating t =
   case T.unpack (T.filter (`elem` ("12345" :: String)) t) of
     [] -> ""
     (c:_) -> T.singleton c  -- Only keep first valid digit
-
--- | Handle events in add/edit book form
-handleAddBookEvent
-  :: BrickEvent Name e
-  -> AddBookState
-  -> EventM Name (Either AddBookState Book) ()
-handleAddBookEvent ev st = case ev of
-  VtyEvent (EvKey KEsc []) ->
-    -- Cancel, return to list
-    halt
-
-  VtyEvent (EvKey KEnter []) ->
-    -- Save the book
-    if T.null (absTitle st)
-      then pure ()  -- Don't save without title
-      else do
-        now <- liftIO getCurrentTime
-        let book = Book
-              { _bookId = maybe (absIsbn st) id (absOriginalId st)
-              , _isbn = if T.null (absIsbn st) then Nothing else Just (absIsbn st)
-              , _title = absTitle st
-              , _authors = parseCommaSeparated (absAuthors st)
-              , _series = Nothing
-              , _seriesIndex = Nothing
-              , _publisher = Nothing
-              , _published = Nothing
-              , _tags = parseCommaSeparated (absTags st)
-              , _rating = Nothing
-              , _comments = Nothing
-              , _location = if T.null (absLocation st) then Nothing else Just (absLocation st)
-              , _custom = mempty
-              , _added = now
-              , _modified = now
-              }
-        put (Right book)
-        halt
-
-  VtyEvent (EvKey (KChar '\t') []) ->
-    -- Move to next field
-    put $ Left $ st { absCurrentField = (absCurrentField st + 1) `mod` 10 }
-
-  VtyEvent (EvKey KBackTab []) ->
-    -- Move to previous field
-    put $ Left $ st { absCurrentField = (absCurrentField st - 1 + 10) `mod` 10 }
-
-  VtyEvent (EvKey KBS []) ->
-    -- Backspace in current field
-    put $ Left $ updateCurrentField (T.dropEnd 1) st
-
-  VtyEvent (EvKey (KChar c) []) ->
-    -- Add character to current field
-    put $ Left $ updateCurrentField (<> T.singleton c) st
-
-  _ -> pure ()
 
 -- | Update the currently selected field
 updateCurrentField :: (Text -> Text) -> AddBookState -> AddBookState

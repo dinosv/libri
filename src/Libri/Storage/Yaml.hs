@@ -19,14 +19,11 @@ module Libri.Storage.Yaml
 
 import Control.Exception (try)
 import Control.Monad (forM, when, void)
-import Data.Aeson (Value)
-import qualified Data.ByteString as BS
 import Data.List (isSuffixOf)
 import qualified Data.Map.Strict as Map
-import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (getCurrentTime)
-import Data.Yaml (decodeFileEither, encodeFile, ParseException)
+import Data.Yaml (decodeFileEither, encodeFile)
 import Lens.Micro ((&), (.~))
 import Libri.Types
 import System.Directory
@@ -37,7 +34,7 @@ import System.Directory
   , listDirectory
   , removeFile
   )
-import System.FilePath ((</>), takeBaseName)
+import System.FilePath ((</>))
 
 -- | Expand ~ to home directory
 expandPath :: FilePath -> IO FilePath
@@ -137,7 +134,8 @@ mergeBooks calibre existing =
       -- Merge: existing non-ids + calibre ids
       mergedCustom = Map.union calibreIds existingNonIds
    in calibre
-        { _location = _location existing
+        { _bookId = _bookId existing
+        , _location = _location existing
         , _added = _added existing
         , _custom = mergedCustom
         }

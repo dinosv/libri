@@ -1,7 +1,6 @@
 module CalibreImportSpec (spec) where
 
 import qualified Data.Map.Strict as Map
-import Data.Text (Text)
 import Libri.Storage.CalibreImport (extractIsbn, partitionIdentifiers)
 import Test.Hspec
 

@@ -2,6 +2,7 @@ module TypesSpec (spec) where
 
 import Data.Aeson (decode, encode)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust)
 import Data.Time (UTCTime, parseTimeM, defaultTimeLocale)
 import Libri.Types
 import Test.Hspec
@@ -10,7 +11,7 @@ spec :: Spec
 spec = describe "Types" $ do
   describe "Book JSON" $ do
     it "encodes and decodes a book correctly" $ do
-      let Just timestamp = parseTimeM True defaultTimeLocale "%Y-%m-%d" "2025-01-01" :: Maybe UTCTime
+      let timestamp = fromJust (parseTimeM True defaultTimeLocale "%Y-%m-%d" "2025-01-01" :: Maybe UTCTime)
           book = Book
             { _bookId = "test-id"
             , _isbn = Just "978-0-13-468599-1"

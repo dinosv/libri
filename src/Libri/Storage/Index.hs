@@ -19,7 +19,6 @@ module Libri.Storage.Index
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Lens.Micro ((^.))
@@ -84,23 +83,27 @@ updateBook book idx =
 -- | Remove a book from the index
 removeBook :: Book -> BookIndex -> BookIndex
 removeBook book idx =
-  BookIndex
-    { _byId = Map.delete (book ^. bookId) (_byId idx)
+  let bid = book ^. bookId
+      removeFromList bs =
+        case filter (\b -> b ^. bookId /= bid) bs of
+          [] -> Nothing
+          xs -> Just xs
+  in BookIndex
+    { _byId = Map.delete bid (_byId idx)
     , _byISBN = case book ^. isbn of
         Nothing -> _byISBN idx
         Just i -> Map.delete i (_byISBN idx)
     , _byLocation = case book ^. location of
         Nothing -> _byLocation idx
-        Just loc ->
-          Map.adjust (filter (\b -> b ^. bookId /= book ^. bookId)) loc (_byLocation idx)
+        Just loc -> Map.update removeFromList loc (_byLocation idx)
     , _byTag =
         foldr
-          (\t m -> Map.adjust (filter (\b -> b ^. bookId /= book ^. bookId)) (T.toLower t) m)
+          (\t m -> Map.update removeFromList (T.toLower t) m)
           (_byTag idx)
           (book ^. tags)
     , _byAuthor =
         foldr
-          (\a m -> Map.adjust (filter (\b -> b ^. bookId /= book ^. bookId)) (T.toLower a) m)
+          (\a m -> Map.update removeFromList (T.toLower a) m)
           (_byAuthor idx)
           (book ^. authors)
     }
