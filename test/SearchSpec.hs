@@ -2,7 +2,6 @@ module SearchSpec (spec) where
 
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Time (UTCTime, parseTimeM, defaultTimeLocale)
 import Data.Maybe (fromJust)
 import Libri.Search.Fuzzy
@@ -23,6 +22,27 @@ makeBook bid bookTitle bookAuthors =
        , _publisher = Nothing
        , _published = Nothing
        , _tags = []
+       , _rating = Nothing
+       , _comments = Nothing
+       , _location = Nothing
+       , _custom = Map.empty
+       , _added = timestamp
+       , _modified = timestamp
+       }
+
+makeBookWithTags :: Text -> Text -> [Text] -> [Text] -> Book
+makeBookWithTags bid bookTitle bookAuthors bookTags =
+  let timestamp = fromJust $ parseTimeM True defaultTimeLocale "%Y-%m-%d" "2025-01-01" :: UTCTime
+  in Book
+       { _bookId = bid
+       , _isbn = Nothing
+       , _title = bookTitle
+       , _authors = bookAuthors
+       , _series = Nothing
+       , _seriesIndex = Nothing
+       , _publisher = Nothing
+       , _published = Nothing
+       , _tags = bookTags
        , _rating = Nothing
        , _comments = Nothing
        , _location = Nothing
@@ -65,17 +85,17 @@ spec = describe "Fuzzy Search" $ do
   describe "searchBooks" $ do
     it "ranks exact title match first" $ do
       let results = searchBooks testThreshold "Pragmatic" testBooks
-      -- Should find at least one result
       length results `shouldSatisfy` (> 0)
-      -- First result should be the best match
-      _title (head results) `shouldBe` "The Pragmatic Programmer"
+      case results of
+        (r:_) -> _title r `shouldBe` "The Pragmatic Programmer"
+        []    -> expectationFailure "expected results"
 
     it "ranks author match first when searching by author" $ do
       let results = searchBooks testThreshold "Martin" testBooks
-      -- Should find at least one result
       length results `shouldSatisfy` (> 0)
-      -- First result should be the best match
-      _title (head results) `shouldBe` "Clean Code"
+      case results of
+        (r:_) -> _title r `shouldBe` "Clean Code"
+        []    -> expectationFailure "expected results"
 
     it "finds fuzzy match" $ do
       let results = searchBooks testThreshold "programing" testBooks  -- typo
@@ -87,8 +107,9 @@ spec = describe "Fuzzy Search" $ do
 
     it "ranks title matches higher than author matches" $ do
       let results = searchBooks testThreshold "Programming" testBooks
-      -- "Programming Pearls" should rank higher than "The Pragmatic Programmer"
-      _title (head results) `shouldBe` "Programming Pearls"
+      case results of
+        (r:_) -> _title r `shouldBe` "Programming Pearls"
+        []    -> expectationFailure "expected results"
 
   describe "short query behavior" $ do
     it "uses exact match for queries < 3 chars" $ do
@@ -101,3 +122,38 @@ spec = describe "Fuzzy Search" $ do
       -- "Programming Pearls" should match "Programming" query
       let results = searchBooks testThreshold "Programming" testBooks
       length results `shouldSatisfy` (> 0)
+
+  describe "accent-insensitive search" $ do
+    let accentBooks =
+          [ makeBook "a1" "Rebaño" ["Óscar Contardo"]
+          , makeBook "a2" "Being and Time" ["Martin Heidegger"]
+          , makeBook "a3" "Café Society" ["Various"]
+          ]
+
+    it "finds accented title with plain ASCII query" $ do
+      let results = searchBooks testThreshold "Rebano" accentBooks
+      length results `shouldSatisfy` (> 0)
+      case results of
+        (r:_) -> _title r `shouldBe` "Rebaño"
+        []    -> expectationFailure "expected results"
+
+    it "finds accented author with plain ASCII query" $ do
+      let results = searchBooks testThreshold "Oscar" accentBooks
+      length results `shouldSatisfy` (> 0)
+      case results of
+        (r:_) -> _title r `shouldBe` "Rebaño"
+        []    -> expectationFailure "expected results"
+
+    it "finds accented title with uppercase query" $ do
+      let results = searchBooks testThreshold "CAFE" accentBooks
+      length results `shouldSatisfy` (> 0)
+      case results of
+        (r:_) -> _title r `shouldBe` "Café Society"
+        []    -> expectationFailure "expected results"
+
+  describe "tokenize normalizes accents" $ do
+    it "folds accents during tokenization" $
+      tokenize "Óscar" `shouldBe` ["oscar"]
+
+    it "folds accents and lowercases" $
+      tokenize "Café" `shouldBe` ["cafe"]

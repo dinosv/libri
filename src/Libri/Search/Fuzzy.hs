@@ -14,6 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Metrics as TM
 import Lens.Micro ((^.))
+import Libri.Text.Normalize (normalizeText)
 import Libri.Types
 
 -- | Search result with relevance score
@@ -31,32 +32,31 @@ minQueryLength = 3
 -- | Search books by query, returning matches sorted by relevance
 -- Uses fuzzy matching for queries >= 3 chars, exact substring for shorter
 searchBooks :: Double -> Text -> [Book] -> [Book]
-searchBooks threshold query books
-  | T.null (T.strip query) = books
-  | T.length (T.strip query) < minQueryLength = searchBooksExact query books
-  | otherwise = map srBook $ searchBooksWithScore threshold query books
+searchBooks threshold query bks
+  | T.null (T.strip query) = bks
+  | T.length (T.strip query) < minQueryLength = searchBooksExact query bks
+  | otherwise = map srBook $ searchBooksWithScore threshold query bks
 
--- | Exact substring search for short queries (case-insensitive)
+-- | Exact substring search for short queries (case-insensitive, accent-insensitive)
 searchBooksExact :: Text -> [Book] -> [Book]
-searchBooksExact query books =
-  let q = T.toLower (T.strip query)
-  in filter (bookContainsExact q) books
+searchBooksExact query bks =
+  let q = normalizeText (T.strip query)
+  in filter (bookContainsExact q) bks
 
 -- | Check if book contains exact substring in title, authors, or tags
 bookContainsExact :: Text -> Book -> Bool
 bookContainsExact q book =
-  q `T.isInfixOf` T.toLower (book ^. title)
-  || any (T.isInfixOf q . T.toLower) (book ^. authors)
-  || any (T.isInfixOf q . T.toLower) (book ^. tags)
+  q `T.isInfixOf` normalizeText (book ^. title)
+  || any (T.isInfixOf q . normalizeText) (book ^. authors)
+  || any (T.isInfixOf q . normalizeText) (book ^. tags)
 
 -- | Search books with scores, filtering by threshold and majority-word matching
 searchBooksWithScore :: Double -> Text -> [Book] -> [SearchResult]
-searchBooksWithScore threshold query books
-  | T.null (T.strip query) = map (\b -> SearchResult b 1.0) books
+searchBooksWithScore threshold query bks
+  | T.null (T.strip query) = map (\b -> SearchResult b 1.0) bks
   | otherwise =
       let queryTokens = tokenize query
-          -- First filter by majority-word matching (>50% of query words must match)
-          booksWithMajority = filter (hasMajorityMatches queryTokens) books
+          booksWithMajority = filter (hasMajorityMatches queryTokens) bks
           -- Then score and filter by threshold
           results = map (scoreBook queryTokens) booksWithMajority
           filtered = filter (\sr -> srScore sr >= threshold) results
@@ -107,7 +107,7 @@ scoreField weight queryTokens fieldText =
 -- Below this, the match is treated as 0 (no match)
 -- This filters out noise from unrelated partial matches
 minTokenMatchThreshold :: Double
-minTokenMatchThreshold = 0.5
+minTokenMatchThreshold = 0.65
 
 -- | Find the best fuzzy match score for a query token against field tokens
 -- Only returns scores above the minimum threshold
@@ -143,9 +143,9 @@ levenshteinSimilarity s1 s2 =
        then 1.0
        else max 0 (1.0 - fromIntegral dist / fromIntegral maxLen)
 
--- | Tokenize text into lowercase words
+-- | Tokenize text into lowercase, accent-folded words
 tokenize :: Text -> [Text]
 tokenize =
   filter (not . T.null)
-  . map T.toLower
+  . map normalizeText
   . T.split (not . isAlphaNum)
