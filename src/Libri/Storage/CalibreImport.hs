@@ -6,17 +6,16 @@ module Libri.Storage.CalibreImport
   , partitionIdentifiers
   ) where
 
-import Control.Exception (try, SomeException)
+import Control.Applicative ((<|>))
+import Control.Exception (bracket, try, SomeException)
 import Control.Monad (forM)
-import Data.Aeson (Value (..), toJSON)
+import Data.Aeson (Value (..))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (Day, UTCTime, getCurrentTime, parseTimeM, defaultTimeLocale)
 import Database.SQLite.Simple
-import Database.SQLite.Simple.FromRow
-import Lens.Micro ((&), (.~))
 import Libri.Types (Book (..), Config, LibriError (..), bookFilename)
 import Libri.Storage.Yaml (loadBook, saveBook, mergeBooks, getDataDir)
 import System.Directory (doesFileExist)
@@ -65,104 +64,99 @@ importFromCalibre libraryPath = do
 
 -- | Import all books from the database
 importBooks :: FilePath -> IO [Book]
-importBooks dbPath = do
-  conn <- open dbPath
-
-  -- Get all books
+importBooks dbPath = bracket (open dbPath) close $ \conn -> do
   calibreBooks <- query_ conn
     "SELECT id, title, sort, timestamp, pubdate, series_index, path, has_cover, last_modified \
     \FROM books" :: IO [CalibreBook]
 
-  -- Convert each book
-  books <- forM calibreBooks $ \cb -> do
-    authors <- getAuthors conn (cbId cb)
+  forM calibreBooks $ \cb -> do
+    authorList <- getAuthors conn (cbId cb)
     identifiers <- getIdentifiers conn (cbId cb)
-    tags <- getTags conn (cbId cb)
-    series <- getSeries conn (cbId cb)
-    publisher <- getPublisher conn (cbId cb)
-    rating <- getRating conn (cbId cb)
-    comments <- getComments conn (cbId cb)
+    tagList <- getTags conn (cbId cb)
+    seriesName <- getSeries conn (cbId cb)
+    pub <- getPublisher conn (cbId cb)
+    rat <- getRating conn (cbId cb)
+    comm <- getComments conn (cbId cb)
     customCols <- getCustomColumns conn (cbId cb)
 
-    convertBook cb authors identifiers tags series publisher rating comments customCols
-
-  close conn
-  pure books
+    convertBook cb authorList identifiers tagList seriesName pub rat comm customCols
 
 -- | Get authors for a book
-getAuthors :: Connection -> Int -> IO [Text]
-getAuthors conn bookId = do
+getAuthors :: Connection -> Int -> IO [T.Text]
+getAuthors conn bid = do
   rows <- query conn
     "SELECT a.name FROM authors a \
     \JOIN books_authors_link bal ON a.id = bal.author \
     \WHERE bal.book = ? \
-    \ORDER BY bal.id" (Only bookId) :: IO [Only Text]
+    \ORDER BY bal.id" (Only bid) :: IO [Only T.Text]
   pure $ map fromOnly rows
 
 -- | Get identifiers for a book (ISBN, Amazon, Google, etc.)
-getIdentifiers :: Connection -> Int -> IO [(Text, Text)]
-getIdentifiers conn bookId = do
+getIdentifiers :: Connection -> Int -> IO [(T.Text, T.Text)]
+getIdentifiers conn bid = do
   result <- try $ query conn
     "SELECT type, val FROM identifiers WHERE book = ?"
-    (Only bookId) :: IO (Either SomeException [(Text, Text)])
+    (Only bid) :: IO (Either SomeException [(T.Text, T.Text)])
   case result of
-    Left _ -> pure []  -- Table might not exist in old Calibre versions
+    Left _ -> pure []
     Right rows -> pure rows
 
 -- | Get tags for a book
-getTags :: Connection -> Int -> IO [Text]
-getTags conn bookId = do
+getTags :: Connection -> Int -> IO [T.Text]
+getTags conn bid = do
   rows <- query conn
     "SELECT t.name FROM tags t \
     \JOIN books_tags_link btl ON t.id = btl.tag \
-    \WHERE btl.book = ?" (Only bookId) :: IO [Only Text]
+    \WHERE btl.book = ?" (Only bid) :: IO [Only T.Text]
   pure $ map fromOnly rows
 
 -- | Get series name for a book
-getSeries :: Connection -> Int -> IO (Maybe Text)
-getSeries conn bookId = do
+getSeries :: Connection -> Int -> IO (Maybe T.Text)
+getSeries conn bid = do
   rows <- query conn
     "SELECT s.name FROM series s \
     \JOIN books_series_link bsl ON s.id = bsl.series \
-    \WHERE bsl.book = ?" (Only bookId) :: IO [Only Text]
+    \WHERE bsl.book = ?" (Only bid) :: IO [Only T.Text]
   pure $ fmap fromOnly (listToMaybe rows)
 
 -- | Get publisher for a book
-getPublisher :: Connection -> Int -> IO (Maybe Text)
-getPublisher conn bookId = do
+getPublisher :: Connection -> Int -> IO (Maybe T.Text)
+getPublisher conn bid = do
   rows <- query conn
     "SELECT p.name FROM publishers p \
     \JOIN books_publishers_link bpl ON p.id = bpl.publisher \
-    \WHERE bpl.book = ?" (Only bookId) :: IO [Only Text]
+    \WHERE bpl.book = ?" (Only bid) :: IO [Only T.Text]
   pure $ fmap fromOnly (listToMaybe rows)
 
 -- | Get rating for a book (Calibre stores 0-10, we use 1-5)
 getRating :: Connection -> Int -> IO (Maybe Int)
-getRating conn bookId = do
+getRating conn bid = do
   rows <- query conn
     "SELECT r.rating FROM ratings r \
     \JOIN books_ratings_link brl ON r.id = brl.rating \
-    \WHERE brl.book = ?" (Only bookId) :: IO [Only Int]
-  pure $ fmap (\(Only r) -> max 1 (min 5 (r `div` 2))) (listToMaybe rows)
+    \WHERE brl.book = ?" (Only bid) :: IO [Only Int]
+  pure $ case listToMaybe rows of
+    Nothing -> Nothing
+    Just (Only r)
+      | r <= 0    -> Nothing
+      | otherwise -> Just $ max 1 (min 5 (r `div` 2))
 
 -- | Get comments for a book
-getComments :: Connection -> Int -> IO (Maybe Text)
-getComments conn bookId = do
+getComments :: Connection -> Int -> IO (Maybe T.Text)
+getComments conn bid = do
   rows <- query conn
-    "SELECT text FROM comments WHERE book = ?" (Only bookId) :: IO [Only Text]
+    "SELECT text FROM comments WHERE book = ?" (Only bid) :: IO [Only T.Text]
   pure $ fmap fromOnly (listToMaybe rows)
 
 -- | Get custom column values for a book
-getCustomColumns :: Connection -> Int -> IO (Map.Map Text Value)
-getCustomColumns conn bookId = do
-  -- First get all custom columns
+getCustomColumns :: Connection -> Int -> IO (Map.Map T.Text Value)
+getCustomColumns conn bid = do
   cols <- query_ conn
-    "SELECT id, label, name, datatype FROM custom_columns" :: IO [(Int, Text, Text, Text)]
+    "SELECT id, label, name, datatype FROM custom_columns" :: IO [(Int, T.Text, T.Text, T.Text)]
 
-  -- For each column, get the value for this book
-  pairs <- forM cols $ \(colId, label, name, datatype) -> do
+  pairs <- forM cols $ \(colId, label, _name, _datatype) -> do
     let tableName = "custom_column_" <> show colId
-    val <- getCustomValue conn tableName bookId datatype
+    val <- getCustomValue conn tableName bid
     pure $ case val of
       Nothing -> Nothing
       Just v -> Just (label, v)
@@ -170,12 +164,11 @@ getCustomColumns conn bookId = do
   pure $ Map.fromList $ catMaybes pairs
 
 -- | Get a single custom column value
-getCustomValue :: Connection -> String -> Int -> Text -> IO (Maybe Value)
-getCustomValue conn tableName bookId datatype = do
-  -- This is simplified - real implementation would need to handle different datatypes
+getCustomValue :: Connection -> String -> Int -> IO (Maybe Value)
+getCustomValue conn tableName bid = do
   result <- try $ query conn
     (Query $ T.pack $ "SELECT value FROM " <> tableName <> " WHERE book = ?")
-    (Only bookId) :: IO (Either SomeException [Only Text])
+    (Only bid) :: IO (Either SomeException [Only T.Text])
   case result of
     Left _ -> pure Nothing
     Right [] -> pure Nothing
@@ -184,23 +177,21 @@ getCustomValue conn tableName bookId datatype = do
 -- | Convert a Calibre book to our Book type
 convertBook
   :: CalibreBook
-  -> [Text]           -- authors
-  -> [(Text, Text)]   -- identifiers
-  -> [Text]           -- tags
-  -> Maybe Text       -- series
-  -> Maybe Text       -- publisher
-  -> Maybe Int        -- rating
-  -> Maybe Text       -- comments
-  -> Map.Map Text Value
+  -> [T.Text]
+  -> [(T.Text, T.Text)]
+  -> [T.Text]
+  -> Maybe T.Text
+  -> Maybe T.Text
+  -> Maybe Int
+  -> Maybe T.Text
+  -> Map.Map T.Text Value
   -> IO Book
-convertBook cb authors identifiers tags series publisher rating comments customCols = do
+convertBook cb authorList identifiers tagList seriesName pub rat comm customCols = do
   now <- getCurrentTime
 
   let pubDate = cbPubdate cb >>= parseDate
 
-  -- Extract ISBN and other identifiers
   let (maybeIsbn, otherIds) = partitionIdentifiers identifiers
-      -- Merge other identifiers into custom, converting Text to Value
       customWithIds = Map.union
         (Map.map String otherIds)
         (Map.delete "location" customCols)
@@ -210,14 +201,14 @@ convertBook cb authors identifiers tags series publisher rating comments customC
       { _bookId = T.pack $ show (cbId cb)
       , _isbn = maybeIsbn
       , _title = cbTitle cb
-      , _authors = authors
-      , _series = series
+      , _authors = authorList
+      , _series = seriesName
       , _seriesIndex = cbSeriesIndex cb
-      , _publisher = publisher
+      , _publisher = pub
       , _published = pubDate
-      , _tags = tags
-      , _rating = rating
-      , _comments = comments
+      , _tags = tagList
+      , _rating = rat
+      , _comments = comm
       , _location = Map.lookup "location" customCols >>= valueToText
       , _custom = customWithIds
       , _added = fromMaybe now (cbTimestamp cb)
@@ -225,24 +216,25 @@ convertBook cb authors identifiers tags series publisher rating comments customC
       }
 
 -- | Parse a date string from Calibre
-parseDate :: Text -> Maybe Day
+parseDate :: T.Text -> Maybe Day
 parseDate t =
   let str = T.unpack t
    in parseTimeM True defaultTimeLocale "%Y-%m-%d" str
         <|> parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S" str
+        <|> parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S%Q%z" str
+        <|> parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S%z" str
+        <|> parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q%z" str
+        <|> parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S%z" str
+        <|> parseTimeM True defaultTimeLocale "%Y-%m-%d %H:%M:%S" str
         <|> parseTimeM True defaultTimeLocale "%Y" str
-  where
-    (<|>) :: Maybe a -> Maybe a -> Maybe a
-    Nothing <|> y = y
-    x <|> _ = x
 
 -- | Extract text from a JSON Value
-valueToText :: Value -> Maybe Text
+valueToText :: Value -> Maybe T.Text
 valueToText (String t) = Just t
 valueToText _ = Nothing
 
 -- | Extract ISBN from a list of identifiers, preferring ISBN-13
-extractIsbn :: [(Text, Text)] -> Maybe Text
+extractIsbn :: [(T.Text, T.Text)] -> Maybe T.Text
 extractIsbn ids =
   let isbns = [val | (typ, val) <- ids, typ == "isbn"]
       isbn13s = filter (\v -> T.length v == 13) isbns
@@ -254,8 +246,7 @@ extractIsbn ids =
           [] -> Nothing
 
 -- | Partition identifiers into ISBN and other identifiers
--- Returns (Maybe ISBN, Map of prefixed identifiers)
-partitionIdentifiers :: [(Text, Text)] -> (Maybe Text, Map.Map Text Text)
+partitionIdentifiers :: [(T.Text, T.Text)] -> (Maybe T.Text, Map.Map T.Text T.Text)
 partitionIdentifiers ids =
   let maybeIsbn = extractIsbn ids
       others = [(T.pack "identifier:" <> typ, val) | (typ, val) <- ids, typ /= "isbn"]
