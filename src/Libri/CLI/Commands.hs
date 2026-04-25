@@ -12,21 +12,24 @@ module Libri.CLI.Commands
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM, forM_, when)
 import Data.Char (toLower)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Lens.Micro ((&), (.~), (^.))
 import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults, normalizeISBN)
-import Libri.ISBN.OpenLibrary (fetchByISBN)
+import Libri.CLI.Enrich (runEnrich)
+import Libri.ISBN.OpenLibrary (fetchByISBN, fetchByISBNWith, newISBNManager)
+import Network.HTTP.Client (Manager)
 import Libri.Search.Fuzzy (searchBooks)
 import Libri.Storage.CalibreImport (importFromCalibre, saveImportedBooks)
-import Libri.Storage.Index (BookIndex, buildIndex, lookupByISBN, lookupById, allBooks)
+import Libri.Storage.Index (BookIndex, buildIndex, lookupByISBN, lookupById)
 import Libri.Storage.Yaml
 import Libri.Types
 import Options.Applicative
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hFlush, hPutStrLn, stderr, stdout)
+import Text.Read (readMaybe)
 
 -- | CLI command to execute
 data Command
@@ -41,6 +44,7 @@ data Command
   | CmdShow Text                    -- ^ Show book details
   | CmdDelete Text                  -- ^ Delete a book
   | CmdVersion                      -- ^ Show version
+  | CmdEnrich                        -- ^ Enrich books from OpenLibrary
   deriving (Show, Eq)
 
 -- | Options for adding a book
@@ -104,6 +108,7 @@ commandParser =
   <|> showCommand
   <|> deleteCommand
   <|> versionCommand
+  <|> enrichCommand
     )
 
 addCommand :: Parser Command
@@ -214,6 +219,12 @@ versionCommand = flag' CmdVersion
  <> help "Show version"
   )
 
+enrichCommand :: Parser Command
+enrichCommand = flag' CmdEnrich
+  ( long "enrich"
+ <> help "Enrich books with missing tags/descriptions from OpenLibrary"
+  )
+
 -- | Run a CLI command
 runCommand :: Config -> Command -> IO ()
 runCommand cfg cmd = case cmd of
@@ -235,17 +246,19 @@ runCommand cfg cmd = case cmd of
 
   CmdList -> runList cfg
 
-  CmdShow bookId -> runShow cfg bookId
+  CmdShow bid -> runShow cfg bid
 
-  CmdDelete bookId -> runDelete cfg bookId
+  CmdDelete bid -> runDelete cfg bid
+
+  CmdEnrich -> runEnrich cfg
 
 -- | Add a new book
 runAdd :: Config -> AddOpts -> IO ()
 runAdd cfg opts = do
   book <- case addISBN opts of
-    Just isbn -> do
-      TIO.putStrLn $ "Looking up ISBN: " <> isbn
-      result <- fetchByISBN isbn
+    Just isbnVal -> do
+      TIO.putStrLn $ "Looking up ISBN: " <> isbnVal
+      result <- fetchByISBN isbnVal
       case result of
         Left err -> do
           hPutStrLn stderr $ "ISBN lookup failed: " <> show err
@@ -284,9 +297,9 @@ runSearch cfg query = do
     Left err -> do
       hPutStrLn stderr $ "Error loading books: " <> show err
       exitFailure
-    Right books -> do
+    Right bks -> do
       let threshold = _fuzzyThreshold cfg
-          results = searchBooks threshold query books
+          results = searchBooks threshold query bks
       if null results
         then TIO.putStrLn "No books found."
         else do
@@ -307,8 +320,8 @@ runMove cfg opts = do
     Left err -> do
       hPutStrLn stderr $ "Error loading books: " <> show err
       exitFailure
-    Right books -> do
-      let idx = buildIndex books
+    Right bks -> do
+      let idx = buildIndex bks
           mBook = lookupById (moveBookId opts) idx
               <|> lookupByISBN (moveBookId opts) idx
       case mBook of
@@ -324,10 +337,6 @@ runMove cfg opts = do
               exitFailure
             Right () -> do
               TIO.putStrLn $ "Moved '" <> (book ^. title) <> "' to " <> moveTo opts
-  where
-    (<|>) :: Maybe a -> Maybe a -> Maybe a
-    Nothing <|> y = y
-    x <|> _ = x
 
 -- | List all locations
 runLocations :: Config -> IO ()
@@ -351,16 +360,14 @@ runImportCalibre cfg path = do
     Left err -> do
       hPutStrLn stderr $ "Import failed: " <> show err
       exitFailure
-    Right books -> do
-      TIO.putStrLn $ "Found " <> T.pack (show (length books)) <> " books"
-      -- Save books with merge support
-      results <- saveImportedBooks cfg books
+    Right bks -> do
+      TIO.putStrLn $ "Found " <> T.pack (show (length bks)) <> " books"
+      results <- saveImportedBooks cfg bks
 
-      -- Report results
       let successes = length [() | Right () <- results]
           failures = length [() | Left _ <- results]
 
-      forM_ (zip books results) $ \(book, saveResult) ->
+      forM_ (zip bks results) $ \(book, saveResult) ->
         case saveResult of
           Left err ->
             hPutStrLn stderr $ "Error saving '" <> T.unpack (book ^. title) <> "': " <> show err
@@ -380,9 +387,9 @@ runList cfg = do
     Left err -> do
       hPutStrLn stderr $ "Error loading books: " <> show err
       exitFailure
-    Right books -> do
-      TIO.putStrLn $ "Total: " <> T.pack (show (length books)) <> " book(s)\n"
-      forM_ books $ \book -> do
+    Right bks -> do
+      TIO.putStrLn $ "Total: " <> T.pack (show (length bks)) <> " book(s)\n"
+      forM_ bks $ \book -> do
         TIO.putStrLn $ (book ^. title)
         TIO.putStrLn $ "  ID: " <> (book ^. bookId)
         when (not $ null $ book ^. authors) $
@@ -400,8 +407,8 @@ runShow cfg bookIdText = do
     Left err -> do
       hPutStrLn stderr $ "Error loading books: " <> show err
       exitFailure
-    Right books -> do
-      let idx = buildIndex books
+    Right bks -> do
+      let idx = buildIndex bks
           mBook = lookupById bookIdText idx
               <|> lookupByISBN bookIdText idx
       case mBook of
@@ -409,10 +416,6 @@ runShow cfg bookIdText = do
           hPutStrLn stderr $ "Book not found: " <> T.unpack bookIdText
           exitFailure
         Just book -> printBookDetails book
-  where
-    (<|>) :: Maybe a -> Maybe a -> Maybe a
-    Nothing <|> y = y
-    x <|> _ = x
 
 -- | Print detailed book information
 printBookDetails :: Book -> IO ()
@@ -459,8 +462,8 @@ runDelete cfg bookIdText = do
     Left err -> do
       hPutStrLn stderr $ "Error loading books: " <> show err
       exitFailure
-    Right books -> do
-      let idx = buildIndex books
+    Right bks -> do
+      let idx = buildIndex bks
           mBook = lookupById bookIdText idx
               <|> lookupByISBN bookIdText idx
       case mBook of
@@ -475,10 +478,6 @@ runDelete cfg bookIdText = do
               exitFailure
             Right () ->
               TIO.putStrLn $ "Deleted: " <> (book ^. title)
-  where
-    (<|>) :: Maybe a -> Maybe a -> Maybe a
-    Nothing <|> y = y
-    x <|> _ = x
 
 -- | Import books from a text file containing ISBNs
 runImportIsbnTxt :: Config -> FilePath -> IO ()
@@ -498,12 +497,13 @@ runImportIsbnTxt cfg path = do
   existingBooks <- loadBooks cfg >>= either (const $ pure []) pure
   let idx = buildIndex existingBooks
 
-  -- Phase 2: Fetch with progress
+  -- Phase 2: Fetch with progress (reuse a single HTTP manager)
+  mgr <- newISBNManager
   results <- forM (zip [1..] isbns) $ \(n :: Int, isbnRaw) -> do
     TIO.putStr $ "Processing " <> tshow n <> "/" <> tshow (length isbns)
               <> ": " <> isbnRaw <> "... "
     hFlush stdout
-    result <- fetchAndCategorize idx isbnRaw
+    result <- fetchAndCategorize mgr idx isbnRaw
     printResultStatus result
     -- 1.5 second delay between requests (rate limiting)
     when (n < length isbns) $ threadDelay 1500000
@@ -540,19 +540,17 @@ tshow :: Show a => a -> Text
 tshow = T.pack . show
 
 -- | Fetch book and categorize against existing index
-fetchAndCategorize :: BookIndex -> Text -> IO FetchResult
-fetchAndCategorize idx isbnRaw = do
+fetchAndCategorize :: Manager -> BookIndex -> Text -> IO FetchResult
+fetchAndCategorize mgr idx isbnRaw = do
   let normalizedIsbn = normalizeISBN isbnRaw
-  -- Check for duplicates first
   case lookupByISBN normalizedIsbn idx of
     Just existing -> do
-      -- It's a duplicate, but still fetch to show comparison
-      result <- fetchByISBN isbnRaw
+      result <- fetchByISBNWith mgr isbnRaw
       case result of
         Right fetched -> pure $ FetchDuplicate fetched existing
         Left _ -> pure $ FetchDuplicate existing existing
     Nothing -> do
-      result <- fetchByISBN isbnRaw
+      result <- fetchByISBNWith mgr isbnRaw
       case result of
         Right book -> pure $ FetchSuccess book
         Left (ISBNNotFound _) -> pure $ FetchNotFound isbnRaw
@@ -671,7 +669,7 @@ selectSpecificBooks newBooks duplicates = do
     "none" -> pure Nothing
     "" -> pure Nothing
     _ -> do
-      let nums = map (read :: String -> Int) $ words input
+      let nums = mapMaybe (readMaybe :: String -> Maybe Int) $ words input
           selected = [book | (n, book) <- numbered, n `elem` nums]
       if null selected
         then do
