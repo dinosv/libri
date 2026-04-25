@@ -822,6 +822,7 @@ handleCommandBarEvent ev st = do
         in put $ st { tuiCommandBarState = Just $ cbs
                         { cbsInput = newInput
                         , cbsCompletionIndex = Nothing
+                        , cbsCompletingCommand = False
                         }
                     }
 
@@ -830,6 +831,7 @@ handleCommandBarEvent ev st = do
         in put $ st { tuiCommandBarState = Just $ cbs
                         { cbsInput = newInput
                         , cbsCompletionIndex = Nothing
+                        , cbsCompletingCommand = False
                         }
                     }
 

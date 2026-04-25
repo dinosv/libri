@@ -82,11 +82,17 @@ spec = describe "CommandBar" $ do
       let c1 = completeNext cbs
       cbsInput c1 `shouldBe` "tag "
 
-    it "after completing command, Tab completes arguments" $ do
+    it "cycles to next command on repeated Tab" $ do
       let c1 = completeNext cbs
           c2 = completeNext c1
+          c3 = completeNext c2
+          c4 = completeNext c3
+          c5 = completeNext c4
       cbsInput c1 `shouldBe` "tag "
-      cbsInput c2 `shouldBe` "tag Philosophy"
+      cbsInput c2 `shouldBe` "author "
+      cbsInput c3 `shouldBe` "group "
+      cbsInput c4 `shouldBe` "sort "
+      cbsInput c5 `shouldBe` "clear "
 
     it "completes partial command keyword" $ do
       let cbs' = cbs { cbsInput = "gr" }

@@ -31,6 +31,7 @@ data CommandBarState = CommandBarState
   , cbsAuthorCandidates :: [Text]
   , cbsCompletionIndex :: Maybe Int
   , cbsLastPrefix :: Text
+  , cbsCompletingCommand :: Bool
   }
   deriving (Show)
 
@@ -41,6 +42,7 @@ initCommandBarState tagCandidates authorCandidates = CommandBarState
   , cbsAuthorCandidates = authorCandidates
   , cbsCompletionIndex = Nothing
   , cbsLastPrefix = ""
+  , cbsCompletingCommand = False
   }
 
 parseCommand :: Text -> Command
@@ -78,23 +80,35 @@ sortSubOptions :: [Text]
 sortSubOptions = ["title", "author", "date"]
 
 completeNext :: CommandBarState -> CommandBarState
-completeNext cbs =
-  let input = cbsInput cbs
-      (cmd, rest) = T.breakOn " " input
-      hasSpace = not (T.null rest)
-  in if not hasSpace
-       then completeFrom commandKeywords cmd cbs (\chosen -> chosen <> " ")
-       else
-         let prefix = if cbsCompletionIndex cbs == Nothing
-                        then T.strip (T.drop 1 rest)
-                        else cbsLastPrefix cbs
-             candidates = case T.toLower cmd of
-               "tag"    -> cbsTagCandidates cbs
-               "author" -> cbsAuthorCandidates cbs
-               "group"  -> groupSubOptions
-               "sort"   -> sortSubOptions
-               _        -> []
-         in completeFrom candidates prefix cbs (\chosen -> cmd <> " " <> chosen)
+completeNext cbs
+  | cbsCompletingCommand cbs = completeCommandLevel cbs
+  | not hasSpace              = completeCommandLevel cbs
+  | otherwise                 = completeArgLevel cbs
+  where
+    (_, rest) = T.breakOn " " (cbsInput cbs)
+    hasSpace = not (T.null rest)
+
+completeCommandLevel :: CommandBarState -> CommandBarState
+completeCommandLevel cbs =
+  let prefix = if cbsCompletionIndex cbs == Nothing
+                 then T.stripEnd (cbsInput cbs)
+                 else cbsLastPrefix cbs
+      result = completeFrom commandKeywords prefix cbs (\chosen -> chosen <> " ")
+  in result { cbsCompletingCommand = True }
+
+completeArgLevel :: CommandBarState -> CommandBarState
+completeArgLevel cbs =
+  let (cmd, rest) = T.breakOn " " (cbsInput cbs)
+      prefix = if cbsCompletionIndex cbs == Nothing
+                 then T.strip (T.drop 1 rest)
+                 else cbsLastPrefix cbs
+      candidates = case T.toLower cmd of
+        "tag"    -> cbsTagCandidates cbs
+        "author" -> cbsAuthorCandidates cbs
+        "group"  -> groupSubOptions
+        "sort"   -> sortSubOptions
+        _        -> []
+  in completeFrom candidates prefix cbs (\chosen -> cmd <> " " <> chosen)
 
 completeFrom :: [Text] -> Text -> CommandBarState -> (Text -> Text) -> CommandBarState
 completeFrom candidates prefix cbs buildInput =
