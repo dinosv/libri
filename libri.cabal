@@ -27,6 +27,7 @@ library
                     , Libri.CLI.Commands
                     , Libri.CLI.BatchImport
                     , Libri.Search.Fuzzy
+                    , Libri.Text.Normalize
                     , Libri.ISBN.OpenLibrary
                     , Libri.TUI.App
                     , Libri.TUI.Views.BookList
@@ -93,6 +94,7 @@ test-suite libri-test
                     , BatchImportSpec
                     , CalibreImportSpec
                     , YamlSpec
+                    , NormalizeSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3
@@ -100,6 +102,7 @@ test-suite libri-test
                     , containers
                     , time
                     , aeson
+                    , unicode-transforms >=0.4 && <0.5
     hs-source-dirs:   test
     default-language: GHC2021
     default-extensions: OverloadedStrings
