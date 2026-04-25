@@ -8,7 +8,7 @@ import Brick.Widgets.Border
 import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Value(..))
-import Data.List (nub, sortBy)
+import Data.List (nub, sort, sortBy)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, listToMaybe, fromMaybe)
@@ -26,9 +26,12 @@ import Lens.Micro ((^.), (&), (.~), (%~))
 import Libri.ISBN.OpenLibrary (fetchByISBN)
 import Libri.Search.Fuzzy (searchBooks)
 import Libri.Storage.Yaml (loadBooks, loadLocations, saveBook, deleteBook)
+import Libri.Text.Normalize (normalizeText)
+import Libri.TUI.CommandBar (CommandBarState(..), Command(..), initCommandBarState, parseCommand, completeNext, renderCommandBar)
 import Libri.TUI.Views.AddBook
 import Libri.TUI.Views.BookDetails (renderBookDetails)
 import Libri.TUI.Views.BookList (renderBookList)
+import Libri.TUI.Views.GroupedList (ListItem(..), buildGroupedList, renderGroupedList, nextSelectableIndex, prevSelectableIndex, firstSelectableIndex)
 import Libri.TUI.Views.MoveBook
 import Libri.TUI.Views.Search (renderSearchBar)
 import Libri.TUI.Widgets.Common
@@ -46,6 +49,7 @@ data TUIState = TUIState
   , tuiAddBookState :: Maybe AddBookState   -- Add/Edit form state
   , tuiMoveBookState :: Maybe MoveBookState -- Move dialog state
   , tuiPendingKey :: Maybe Char     -- For two-key sequences like 'st', 'sa', 'sd'
+  , tuiCommandBarState :: Maybe CommandBarState
   }
   deriving (Show)
 
@@ -80,6 +84,7 @@ runTUI cfg = do
         , tuiAddBookState = Nothing
         , tuiMoveBookState = Nothing
         , tuiPendingKey = Nothing
+        , tuiCommandBarState = Nothing
         }
 
   -- Run the app
@@ -103,31 +108,41 @@ drawUI st =
   let appSt = tuiAppState st
       visibleBooks = getVisibleBooks appSt
       selectedBook = getSelectedBook appSt visibleBooks
+      mCbs = tuiCommandBarState st
   in case appSt ^. currentView of
        ViewAdd ->
          case tuiAddBookState st of
            Just abs' -> [renderAddBook abs']
-           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st)]
+           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
        ViewEdit _ ->
          case tuiAddBookState st of
            Just abs' -> [renderEditBook abs']
-           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st)]
+           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
        ViewMove _ ->
          case tuiMoveBookState st of
            Just mbs -> [renderMoveBook mbs]
-           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st)]
-       _ -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st)]
+           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
+       _ -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
 
 -- | Get books filtered by search query and sorted
 getVisibleBooks :: AppState -> [Book]
 getVisibleBooks st =
   let query = st ^. searchQuery
-      allBooks = st ^. books
-      sorted = applySortOrder (st ^. sortField) (st ^. sortOrder) allBooks
+      filtered = applyFilter (st ^. activeFilter) (st ^. books)
+      sorted = applySortOrder (st ^. sortField) (st ^. sortOrder) filtered
       threshold = st ^. config . fuzzyThreshold
   in if T.null query
        then sorted
        else searchBooks threshold query sorted
+
+applyFilter :: Maybe Filter -> [Book] -> [Book]
+applyFilter Nothing bks = bks
+applyFilter (Just (FilterTag t)) bks =
+  let normT = normalizeText t
+  in filter (\b -> any (\tag -> normT `T.isInfixOf` normalizeText tag) (b ^. tags)) bks
+applyFilter (Just (FilterAuthor a)) bks =
+  let normA = normalizeText a
+  in filter (\b -> any (\auth -> normA `T.isInfixOf` normalizeText auth) (b ^. authors)) bks
 
 -- | Apply sort order to books
 applySortOrder :: SortField -> SortOrder -> [Book] -> [Book]
@@ -147,15 +162,23 @@ applySortOrder field order bks =
 
 -- | Get the currently selected book
 getSelectedBook :: AppState -> [Book] -> Maybe Book
-getSelectedBook st visibleBooks =
-  let idx = st ^. selectedIndex
-  in if idx >= 0 && idx < length visibleBooks
-       then Just (visibleBooks !! idx)
-       else Nothing
+getSelectedBook st visibleBks =
+  case st ^. groupMode of
+    Nothing ->
+      let idx = st ^. selectedIndex
+      in if idx >= 0 && idx < length visibleBks
+           then Just (visibleBks !! idx)
+           else Nothing
+    Just gf ->
+      let items = buildGroupedList gf (st ^. sortField) (st ^. sortOrder) visibleBks
+          idx = st ^. selectedIndex
+      in case drop idx items of
+           (BookRow b : _) -> Just b
+           _ -> Nothing
 
 -- | Main layout with list and details
-mainLayout :: AppState -> [Book] -> Maybe Book -> Maybe Text -> Widget Name
-mainLayout st visibleBooks selectedBook msg =
+mainLayout :: AppState -> [Book] -> Maybe Book -> Maybe Text -> Maybe CommandBarState -> Widget Name
+mainLayout st visibleBooks selectedBook msg mCbs =
   vBox
     [ -- Header
       withAttr headerAttr $ padAll 1 $
@@ -168,11 +191,11 @@ mainLayout st visibleBooks selectedBook msg =
       hBox
         [ -- Left: Book list
           hLimitPercent 50 $
-            titledBorder ("Books" <> searchIndicator st) $
+            titledBorder ("Books" <> searchIndicator st <> filterIndicator st) $
               vBox
-                [ padAll 1 $ renderBookList visibleBooks (st ^. selectedIndex)
+                [ padAll 1 $ renderBookArea st visibleBooks
                 , hBorder
-                , renderSearchOrHelp st
+                , renderSearchOrCommandBar st mCbs
                 ]
         , vBorder
         , -- Right: Book details
@@ -192,11 +215,28 @@ searchIndicator st =
        then ""
        else " [/" <> query <> "]"
 
--- | Render search bar or help text
-renderSearchOrHelp :: AppState -> Widget Name
-renderSearchOrHelp st =
+renderBookArea :: AppState -> [Book] -> Widget Name
+renderBookArea st bks =
+  case st ^. groupMode of
+    Nothing -> renderBookList bks (st ^. selectedIndex)
+    Just gf ->
+      let items = buildGroupedList gf (st ^. sortField) (st ^. sortOrder) bks
+      in renderGroupedList items (st ^. selectedIndex)
+
+filterIndicator :: AppState -> Text
+filterIndicator st =
+  case st ^. activeFilter of
+    Nothing -> ""
+    Just (FilterTag t)    -> " [tag:" <> t <> "]"
+    Just (FilterAuthor a) -> " [author:" <> a <> "]"
+
+renderSearchOrCommandBar :: AppState -> Maybe CommandBarState -> Widget Name
+renderSearchOrCommandBar st mCbs =
   padAll 1 $ case st ^. currentView of
-    ViewSearch -> renderSearchBar (st ^. searchQuery) True
+    ViewSearch  -> renderSearchBar (st ^. searchQuery) True
+    ViewCommand -> case mCbs of
+      Just cbs -> renderCommandBar cbs
+      Nothing  -> renderSearchBar (st ^. searchQuery) False
     _ -> renderSearchBar (st ^. searchQuery) False
 
 -- | Render the footer
@@ -210,6 +250,7 @@ renderFooter st msg =
       , hBox
           [ keyHelp
               [ ("/", "Search")
+              , (":", "Command")
               , ("a", "Add")
               , ("e", "Edit")
               , ("d", "Delete")
@@ -269,6 +310,8 @@ handleEvent ev = do
 
     ViewMove _ -> handleMoveEvent ev st
 
+    ViewCommand -> handleCommandBarEvent ev st
+
     ViewList -> handleListViewEvent ev st
 
     _ -> handleListViewEvent ev st
@@ -289,14 +332,10 @@ handleListViewEvent ev st = do
         else halt
 
     -- Navigation
-    VtyEvent (V.EvKey V.KUp []) ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ max 0 . subtract 1 }
-    VtyEvent (V.EvKey V.KDown []) ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ min (length visibleBooks - 1) . (+ 1) }
-    VtyEvent (V.EvKey (V.KChar 'k') []) ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ max 0 . subtract 1 }
-    VtyEvent (V.EvKey (V.KChar 'j') []) ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ min (length visibleBooks - 1) . (+ 1) }
+    VtyEvent (V.EvKey V.KUp []) -> navigateUp st appSt visibleBooks
+    VtyEvent (V.EvKey V.KDown []) -> navigateDown st appSt visibleBooks
+    VtyEvent (V.EvKey (V.KChar 'k') []) -> navigateUp st appSt visibleBooks
+    VtyEvent (V.EvKey (V.KChar 'j') []) -> navigateDown st appSt visibleBooks
     VtyEvent (V.EvKey V.KHome []) ->
       put $ st { tuiAppState = appSt & selectedIndex .~ 0 }
     VtyEvent (V.EvKey V.KEnd []) ->
@@ -354,6 +393,16 @@ handleListViewEvent ev st = do
       put $ st { tuiAppState = appSt & books .~ newBooks
                , tuiMessage = Just $ "Refreshed: " <> T.pack (show (length newBooks)) <> " books"
                }
+
+    -- Command bar
+    VtyEvent (V.EvKey (V.KChar ':') []) ->
+      let allTags = nub $ sort $ concatMap (^. tags) (appSt ^. books)
+          allAuthors = nub $ sort $ concatMap (^. authors) (appSt ^. books)
+          cbs = initCommandBarState allTags allAuthors
+      in put $ st { tuiAppState = appSt & currentView .~ ViewCommand
+                  , tuiCommandBarState = Just cbs
+                  , tuiMessage = Just "Type command, Tab to complete, Enter to execute"
+                  }
 
     -- Help
     VtyEvent (V.EvKey (V.KChar '?') []) ->
@@ -740,3 +789,130 @@ parseRating t =
   case T.unpack t of
     [c] | c `elem` ("12345" :: String) -> Just (read [c])
     _ -> Nothing
+
+-- | Handle events in command bar view
+handleCommandBarEvent :: BrickEvent Name e -> TUIState -> EventM Name TUIState ()
+handleCommandBarEvent ev st = do
+  let appSt = tuiAppState st
+
+  case tuiCommandBarState st of
+    Nothing -> put $ st { tuiAppState = appSt & currentView .~ ViewList }
+    Just cbs -> case ev of
+      VtyEvent (V.EvKey V.KEsc []) ->
+        put $ st { tuiAppState = appSt & currentView .~ ViewList
+                 , tuiCommandBarState = Nothing
+                 , tuiMessage = Nothing
+                 }
+
+      VtyEvent (V.EvKey V.KEnter []) ->
+        executeCommand (parseCommand (cbsInput cbs)) st
+
+      VtyEvent (V.EvKey (V.KChar '\t') []) ->
+        put $ st { tuiCommandBarState = Just (completeNext cbs) }
+
+      VtyEvent (V.EvKey V.KBS []) ->
+        let newInput = T.dropEnd 1 (cbsInput cbs)
+        in put $ st { tuiCommandBarState = Just $ cbs
+                        { cbsInput = newInput
+                        , cbsCompletionIndex = Nothing
+                        }
+                    }
+
+      VtyEvent (V.EvKey (V.KChar c) []) ->
+        let newInput = cbsInput cbs <> T.singleton c
+        in put $ st { tuiCommandBarState = Just $ cbs
+                        { cbsInput = newInput
+                        , cbsCompletionIndex = Nothing
+                        }
+                    }
+
+      _ -> pure ()
+
+-- | Execute a parsed command
+executeCommand :: Command -> TUIState -> EventM Name TUIState ()
+executeCommand cmd st = do
+  let appSt = tuiAppState st
+  case cmd of
+    CmdFilterTag t ->
+      put $ st { tuiAppState = appSt & activeFilter .~ Just (FilterTag t)
+                                      & currentView .~ ViewList
+                                      & selectedIndex .~ 0
+               , tuiCommandBarState = Nothing
+               , tuiMessage = Just $ "Filter: tag = " <> t
+               }
+    CmdFilterAuthor a ->
+      put $ st { tuiAppState = appSt & activeFilter .~ Just (FilterAuthor a)
+                                      & currentView .~ ViewList
+                                      & selectedIndex .~ 0
+               , tuiCommandBarState = Nothing
+               , tuiMessage = Just $ "Filter: author = " <> a
+               }
+    CmdGroup gf ->
+      let newAppSt = appSt & groupMode .~ Just gf
+                            & currentView .~ ViewList
+                            & selectedIndex .~ 0
+          visibleBks = getVisibleBooks newAppSt
+          items = buildGroupedList gf (newAppSt ^. sortField) (newAppSt ^. sortOrder) visibleBks
+          firstIdx = firstSelectableIndex items
+      in put $ st { tuiAppState = newAppSt & selectedIndex .~ firstIdx
+                  , tuiCommandBarState = Nothing
+                  , tuiMessage = Just $ "Grouped by " <> groupFieldName gf
+                  }
+    CmdGroupNone ->
+      put $ st { tuiAppState = appSt & groupMode .~ Nothing
+                                      & currentView .~ ViewList
+                                      & selectedIndex .~ 0
+               , tuiCommandBarState = Nothing
+               , tuiMessage = Just "Grouping cleared"
+               }
+    CmdSort sf ->
+      put $ st { tuiAppState = appSt & sortField .~ sf
+                                      & currentView .~ ViewList
+                                      & selectedIndex .~ 0
+               , tuiCommandBarState = Nothing
+               , tuiMessage = Just $ "Sorted by " <> sortFieldName sf
+               }
+    CmdClear ->
+      put $ st { tuiAppState = appSt & activeFilter .~ Nothing
+                                      & groupMode .~ Nothing
+                                      & currentView .~ ViewList
+                                      & selectedIndex .~ 0
+               , tuiCommandBarState = Nothing
+               , tuiMessage = Just "Filters and grouping cleared"
+               }
+    CmdUnknown t ->
+      put $ st { tuiAppState = appSt & currentView .~ ViewList
+               , tuiCommandBarState = Nothing
+               , tuiMessage = Just $ "Unknown command: " <> t
+               }
+
+groupFieldName :: GroupField -> Text
+groupFieldName GroupByTag = "tag"
+groupFieldName GroupByAuthor = "author"
+
+sortFieldName :: SortField -> Text
+sortFieldName SortByTitle = "title"
+sortFieldName SortByAuthor = "author"
+sortFieldName SortByDate = "date"
+
+-- | Navigate up, skipping section headers in grouped mode
+navigateUp :: TUIState -> AppState -> [Book] -> EventM Name TUIState ()
+navigateUp st appSt visibleBks =
+  case appSt ^. groupMode of
+    Nothing ->
+      put $ st { tuiAppState = appSt & selectedIndex %~ max 0 . subtract 1 }
+    Just gf ->
+      let items = buildGroupedList gf (appSt ^. sortField) (appSt ^. sortOrder) visibleBks
+          newIdx = prevSelectableIndex items (appSt ^. selectedIndex)
+      in put $ st { tuiAppState = appSt & selectedIndex .~ newIdx }
+
+-- | Navigate down, skipping section headers in grouped mode
+navigateDown :: TUIState -> AppState -> [Book] -> EventM Name TUIState ()
+navigateDown st appSt visibleBks =
+  case appSt ^. groupMode of
+    Nothing ->
+      put $ st { tuiAppState = appSt & selectedIndex %~ min (length visibleBks - 1) . (+ 1) }
+    Just gf ->
+      let items = buildGroupedList gf (appSt ^. sortField) (appSt ^. sortOrder) visibleBks
+          newIdx = nextSelectableIndex items (appSt ^. selectedIndex)
+      in put $ st { tuiAppState = appSt & selectedIndex .~ newIdx }
