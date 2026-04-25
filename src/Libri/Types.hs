@@ -38,11 +38,16 @@ module Libri.Types
   , currentView
   , sortField
   , sortOrder
+  , activeFilter
+  , groupMode
     -- * View Types
   , View (..)
     -- * Sort Types
   , SortField (..)
   , SortOrder (..)
+    -- * Filter Types
+  , Filter (..)
+  , GroupField (..)
     -- * Helper Functions
   , newBook
   , defaultConfig
@@ -64,7 +69,6 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (Day, UTCTime, getCurrentTime)
-import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import GHC.Generics (Generic)
@@ -173,10 +177,21 @@ data SortField = SortByTitle | SortByAuthor | SortByDate
 data SortOrder = Ascending | Descending
   deriving (Show, Eq)
 
+-- | Filter for narrowing the book list
+data Filter
+  = FilterTag Text
+  | FilterAuthor Text
+  deriving (Show, Eq)
+
+-- | Field to group books by
+data GroupField = GroupByTag | GroupByAuthor
+  deriving (Show, Eq)
+
 -- | Different views in the TUI
 data View
   = ViewList
   | ViewSearch
+  | ViewCommand
   | ViewAdd
   | ViewEdit BookId
   | ViewMove BookId
@@ -193,6 +208,8 @@ data AppState = AppState
   , _currentView :: View
   , _sortField :: SortField
   , _sortOrder :: SortOrder
+  , _activeFilter :: Maybe Filter
+  , _groupMode :: Maybe GroupField
   }
   deriving (Show)
 

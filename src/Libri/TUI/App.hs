@@ -4,9 +4,7 @@ module Libri.TUI.App
   ) where
 
 import Brick
-import Brick.Main (suspendAndResume)
 import Brick.Widgets.Border
-import Brick.Widgets.Center
 import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Value(..))
@@ -20,10 +18,8 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time (Day, getCurrentTime, fromGregorian)
 import Text.Read (readMaybe)
-import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
-import Graphics.Vty (defAttr)
 import qualified Graphics.Vty as V
 import Graphics.Vty.CrossPlatform (mkVty)
 import Lens.Micro ((^.), (&), (.~), (%~))
@@ -32,9 +28,9 @@ import Libri.Search.Fuzzy (searchBooks)
 import Libri.Storage.Yaml (loadBooks, loadLocations, saveBook, deleteBook)
 import Libri.TUI.Views.AddBook
 import Libri.TUI.Views.BookDetails (renderBookDetails)
-import Libri.TUI.Views.BookList (renderBookList, handleBookListEvent)
+import Libri.TUI.Views.BookList (renderBookList)
 import Libri.TUI.Views.MoveBook
-import Libri.TUI.Views.Search (renderSearchBar, handleSearchEvent)
+import Libri.TUI.Views.Search (renderSearchBar)
 import Libri.TUI.Widgets.Common
 import Libri.Types
 import System.Environment (lookupEnv)
@@ -74,6 +70,8 @@ runTUI cfg = do
             , _currentView = ViewList
             , _sortField = SortByTitle
             , _sortOrder = Ascending
+            , _activeFilter = Nothing
+            , _groupMode = Nothing
             }
         , tuiMessage = case booksResult of
             Left err -> Just $ "Error loading books: " <> T.pack (show err)
@@ -504,20 +502,19 @@ handleAddEditEvent ev st = do
                  }
 
       VtyEvent (V.EvKey V.KEnter []) ->
-        -- Save the book
         if T.null (absTitle abs')
           then put $ st { tuiMessage = Just "Title is required" }
           else do
             now <- liftIO getCurrentTime
-            -- Generate new ID for new books, keep original for edits
             newId <- case absOriginalId abs' of
               Just origId -> pure origId
               Nothing -> do
                 if T.null (absIsbn abs')
                   then liftIO $ UUID.toText <$> UUID.nextRandom
-                  else pure (absIsbn abs')
+                  else pure (T.filter (\c -> c /= '-' && c /= ' ') (absIsbn abs'))
 
-            let book = Book
+            let addedTime = fromMaybe now (absOriginalAdded abs')
+                book = Book
                   { _bookId = newId
                   , _isbn = if T.null (absIsbn abs') then Nothing else Just (absIsbn abs')
                   , _title = absTitle abs'
@@ -531,7 +528,7 @@ handleAddEditEvent ev st = do
                   , _comments = if T.null (absComments abs') then Nothing else Just (absComments abs')
                   , _location = if T.null (absLocation abs') then Nothing else Just (absLocation abs')
                   , _custom = Map.fromList $ map (\(k, v) -> (k, String v)) (absCustomFields abs')
-                  , _added = now
+                  , _added = addedTime
                   , _modified = now
                   }
             result <- liftIO $ saveBook cfg book
