@@ -4,8 +4,9 @@ import qualified Data.Map.Strict as Map
 import Data.Aeson (Value(..))
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
-import Libri.Storage.Yaml (mergeBooks, saveBook, loadBook, loadBooksWithErrors)
-import Libri.Types (Book(..), Config(..), bookFilename, defaultConfig)
+import Libri.Storage.Yaml (mergeBooks, saveBook, deleteBook, loadBook, loadBooksWithErrors)
+import Libri.Types (Book(..), Config(..), bookFilename, legacyBookFilename, defaultConfig)
+import System.Directory (listDirectory, renameFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -121,6 +122,39 @@ spec = describe "YAML Storage" $ do
             _location b `shouldBe` _location sampleBook
             _custom b `shouldBe` _custom sampleBook
             _added b `shouldBe` _added sampleBook
+
+    it "saving replaces a legacy-named file with the canonical name" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let cfg = defaultConfig { _dataDir = dir }
+            booksDir = dir </> "books"
+        Right () <- saveBook cfg sampleBook
+        -- Simulate a pre-slug file name
+        renameFile (booksDir </> bookFilename sampleBook)
+                   (booksDir </> legacyBookFilename sampleBook)
+        Right () <- saveBook cfg sampleBook
+        files <- listDirectory booksDir
+        files `shouldBe` [bookFilename sampleBook]
+
+    it "saving after a title change renames the file" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let cfg = defaultConfig { _dataDir = dir }
+            booksDir = dir </> "books"
+            renamed = sampleBook { _title = "A Different Title" }
+        Right () <- saveBook cfg sampleBook
+        Right () <- saveBook cfg renamed
+        files <- listDirectory booksDir
+        files `shouldBe` [bookFilename renamed]
+
+    it "deleteBook removes a legacy-named file" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let cfg = defaultConfig { _dataDir = dir }
+            booksDir = dir </> "books"
+        Right () <- saveBook cfg sampleBook
+        renameFile (booksDir </> bookFilename sampleBook)
+                   (booksDir </> legacyBookFilename sampleBook)
+        Right () <- deleteBook cfg sampleBook
+        files <- listDirectory booksDir
+        files `shouldBe` []
 
     it "loadBooksWithErrors skips corrupt files but loads the rest" $
       withSystemTempDirectory "libri-test" $ \dir -> do

@@ -11,6 +11,9 @@ import qualified CommandBarSpec
 import qualified GroupedListSpec
 import qualified EnrichSpec
 import qualified TagSidebarSpec
+import qualified TagsSpec
+import qualified DoctorSpec
+import qualified MigrateSpec
 
 main :: IO ()
 main = hspec $ do
@@ -24,3 +27,6 @@ main = hspec $ do
   GroupedListSpec.spec
   EnrichSpec.spec
   TagSidebarSpec.spec
+  TagsSpec.spec
+  DoctorSpec.spec
+  MigrateSpec.spec

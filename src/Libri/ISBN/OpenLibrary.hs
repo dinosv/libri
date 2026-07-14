@@ -13,6 +13,8 @@ import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (Day, getCurrentTime, parseTimeM, defaultTimeLocale)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 import Libri.Types
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -148,11 +150,12 @@ instance FromJSON AuthorResponse where
 convertToBook :: Text -> OpenLibraryBook -> [Text] -> IO Book
 convertToBook isbnText olBook authorNames = do
   now <- getCurrentTime
+  uuid <- UUID.nextRandom
 
   let pubDate = olPublishDate olBook >>= parsePublishDate
 
   pure Book
-    { _bookId = isbnText
+    { _bookId = UUID.toText uuid
     , _isbn = Just isbnText
     , _title = olTitle olBook
     , _authors = authorNames

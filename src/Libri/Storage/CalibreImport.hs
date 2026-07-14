@@ -4,6 +4,8 @@ module Libri.Storage.CalibreImport
   , CalibreBook (..)
   , extractIsbn
   , partitionIdentifiers
+  , calibreIdentifier
+  , findExistingBook
   ) where
 
 import Control.Applicative ((<|>))
@@ -17,9 +19,11 @@ import qualified Data.Vector as V
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (Day, UTCTime, getCurrentTime, parseTimeM, defaultTimeLocale)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 import Database.SQLite.Simple
-import Libri.Types (Book (..), Config, LibriError (..), bookFilename)
-import Libri.Storage.Yaml (loadBook, saveBook, mergeBooks, getDataDir)
+import Libri.Types (Book (..), Config, LibriError (..))
+import Libri.Storage.Yaml (loadBooksWithErrors, saveBook, mergeBooks)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
@@ -67,6 +71,7 @@ importFromCalibre libraryPath = do
 -- | Import all books from the database
 importBooks :: FilePath -> IO [Book]
 importBooks dbPath = bracket (open dbPath) close $ \conn -> do
+  libraryUuid <- getLibraryUuid conn
   calibreBooks <- query_ conn
     "SELECT id, title, sort, timestamp, pubdate, series_index, path, has_cover, last_modified \
     \FROM books" :: IO [CalibreBook]
@@ -81,7 +86,17 @@ importBooks dbPath = bracket (open dbPath) close $ \conn -> do
     comm <- getComments conn (cbId cb)
     customCols <- getCustomColumns conn (cbId cb)
 
-    convertBook cb authorList identifiers tagList seriesName pub rat comm customCols
+    convertBook libraryUuid cb authorList identifiers tagList seriesName pub rat comm customCols
+
+-- | The Calibre library's own UUID, used to namespace book identifiers
+-- so imports from different libraries can never be confused
+getLibraryUuid :: Connection -> IO T.Text
+getLibraryUuid conn = do
+  result <- try (query_ conn "SELECT uuid FROM library_id LIMIT 1")
+    :: IO (Either SomeException [Only T.Text])
+  pure $ case result of
+    Right (Only u : _) -> u
+    _ -> ""
 
 -- | Get authors for a book
 getAuthors :: Connection -> Int -> IO [T.Text]
@@ -204,7 +219,8 @@ sqlToValue datatype sql = case sql of
 
 -- | Convert a Calibre book to our Book type
 convertBook
-  :: CalibreBook
+  :: T.Text
+  -> CalibreBook
   -> [T.Text]
   -> [(T.Text, T.Text)]
   -> [T.Text]
@@ -214,19 +230,22 @@ convertBook
   -> Maybe T.Text
   -> Map.Map T.Text Value
   -> IO Book
-convertBook cb authorList identifiers tagList seriesName pub rat comm customCols = do
+convertBook libraryUuid cb authorList identifiers tagList seriesName pub rat comm customCols = do
   now <- getCurrentTime
+  uuid <- UUID.nextRandom
 
   let pubDate = cbPubdate cb >>= parseDate
 
   let (maybeIsbn, otherIds) = partitionIdentifiers identifiers
-      customWithIds = Map.union
-        (Map.map String otherIds)
-        (Map.delete "location" customCols)
+      calibreRef = calibreIdentifier libraryUuid (cbId cb)
+      customWithIds = Map.insert "identifier:calibre" (String calibreRef) $
+        Map.union
+          (Map.map String otherIds)
+          (Map.delete "location" customCols)
 
   pure
     Book
-      { _bookId = T.pack $ show (cbId cb)
+      { _bookId = UUID.toText uuid
       , _isbn = maybeIsbn
       , _title = cbTitle cb
       , _authors = authorList
@@ -280,16 +299,41 @@ partitionIdentifiers ids =
       others = [(T.pack "identifier:" <> typ, val) | (typ, val) <- ids, typ /= "isbn"]
    in (maybeIsbn, Map.fromList others)
 
--- | Save imported books, merging with existing if present
+-- | Namespaced Calibre book reference: "<libraryUuid>:<bookId>"
+calibreIdentifier :: T.Text -> Int -> T.Text
+calibreIdentifier libraryUuid bid =
+  libraryUuid <> ":" <> T.pack (show bid)
+
+-- | Find the existing book an imported one corresponds to, if any:
+-- by Calibre identifier (namespaced or the bare ID a migration
+-- stores), by normalised ISBN, or by legacy numeric bookId
+findExistingBook :: [Book] -> Book -> Maybe Book
+findExistingBook existing imported =
+  let calibreRef = Map.lookup "identifier:calibre" (_custom imported)
+      bareRef = calibreRef >>= \v -> case v of
+        String s -> Just $ T.takeWhileEnd (/= ':') s
+        _ -> Nothing
+      normalize = T.filter (\c -> c /= '-' && c /= ' ')
+      matchesCalibre b = case (calibreRef, Map.lookup "identifier:calibre" (_custom b)) of
+        (Just ref, Just other) | ref == other -> True
+        _ -> case bareRef of
+          Just bare -> Map.lookup "identifier:calibre" (_custom b) == Just (String bare)
+          Nothing -> False
+      matchesIsbn b = case (_isbn imported, _isbn b) of
+        (Just i, Just j) -> normalize i == normalize j
+        _ -> False
+      matchesLegacyId b = Just (_bookId b) == bareRef
+  in listToMaybe $ filter
+       (\b -> matchesCalibre b || matchesIsbn b || matchesLegacyId b)
+       existing
+
+-- | Save imported books, merging with existing entries when the book
+-- is already in the collection
 saveImportedBooks :: Config -> [Book] -> IO [Either LibriError ()]
 saveImportedBooks cfg books = do
-  dir <- getDataDir cfg
-  let booksDir = dir </> "books"
+  (_, existing) <- loadBooksWithErrors cfg
   forM books $ \book -> do
-    let filename = bookFilename book
-        path = booksDir </> filename
-    existingResult <- loadBook path
-    let bookToSave = case existingResult of
-          Right existing -> mergeBooks book existing
-          Left _ -> book  -- No existing book, use as-is
+    let bookToSave = case findExistingBook existing book of
+          Just old -> mergeBooks book old
+          Nothing -> book
     saveBook cfg bookToSave

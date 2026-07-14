@@ -19,7 +19,10 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Lens.Micro ((&), (.~), (^.))
 import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults, normalizeISBN)
+import Libri.CLI.Doctor (runDoctor)
 import Libri.CLI.Enrich (runEnrich)
+import Libri.CLI.Migrate (runMigrateIds)
+import Libri.CLI.Tags (runTagRename, runTagDelete)
 import Libri.ISBN.OpenLibrary (fetchByISBN, fetchByISBNWith, newISBNManager)
 import Network.HTTP.Client (Manager)
 import Libri.Search.Fuzzy (searchBooks)
@@ -45,7 +48,11 @@ data Command
   | CmdShow Text                    -- ^ Show book details
   | CmdDelete Text                  -- ^ Delete a book
   | CmdVersion                      -- ^ Show version
-  | CmdEnrich                        -- ^ Enrich books from OpenLibrary
+  | CmdEnrich                       -- ^ Enrich books from OpenLibrary
+  | CmdDoctor                       -- ^ Collection integrity report
+  | CmdMigrateIds                   -- ^ Migrate to UUID ids/slug filenames
+  | CmdTagRename Text Text          -- ^ Rename/merge a tag
+  | CmdTagDelete Text               -- ^ Delete a tag everywhere
   deriving (Show, Eq)
 
 -- | Options for adding a book
@@ -110,6 +117,10 @@ commandParser =
   <|> deleteCommand
   <|> versionCommand
   <|> enrichCommand
+  <|> doctorCommand
+  <|> migrateIdsCommand
+  <|> tagRenameCommand
+  <|> tagDeleteCommand
     )
 
 addCommand :: Parser Command
@@ -226,6 +237,38 @@ enrichCommand = flag' CmdEnrich
  <> help "Enrich books with missing tags/descriptions from OpenLibrary"
   )
 
+doctorCommand :: Parser Command
+doctorCommand = flag' CmdDoctor
+  ( long "doctor"
+ <> help "Check collection integrity (read-only)"
+  )
+
+migrateIdsCommand :: Parser Command
+migrateIdsCommand = flag' CmdMigrateIds
+  ( long "migrate-ids"
+ <> help "Migrate books to UUID IDs and title-based filenames"
+  )
+
+tagRenameCommand :: Parser Command
+tagRenameCommand = CmdTagRename
+  <$> strOption
+      ( long "tag-rename"
+     <> metavar "OLD"
+     <> help "Rename a tag across the collection (with --to)"
+      )
+  <*> strOption
+      ( long "to"
+     <> metavar "NEW"
+     <> help "New tag name"
+      )
+
+tagDeleteCommand :: Parser Command
+tagDeleteCommand = CmdTagDelete <$> strOption
+  ( long "tag-delete"
+ <> metavar "TAG"
+ <> help "Remove a tag from every book"
+  )
+
 -- | Run a CLI command
 runCommand :: Config -> Command -> IO ()
 runCommand cfg cmd = case cmd of
@@ -252,6 +295,14 @@ runCommand cfg cmd = case cmd of
   CmdDelete bid -> runDelete cfg bid
 
   CmdEnrich -> runEnrich cfg
+
+  CmdDoctor -> runDoctor cfg
+
+  CmdMigrateIds -> runMigrateIds cfg
+
+  CmdTagRename old new -> runTagRename cfg old new
+
+  CmdTagDelete tag -> runTagDelete cfg tag
 
 -- | Load books, printing a warning for any unreadable files
 loadBooksReporting :: Config -> IO [Book]

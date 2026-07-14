@@ -53,6 +53,8 @@ module Libri.Types
   , newBook
   , defaultConfig
   , bookFilename
+  , bookShortId
+  , legacyBookFilename
   ) where
 
 import Data.Aeson
@@ -65,6 +67,7 @@ import Data.Aeson
   , (.:?)
   , (.=)
   )
+import Data.Char (isAlphaNum, isAscii)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -74,7 +77,7 @@ import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import GHC.Generics (Generic)
 import Lens.Micro.TH (makeLenses)
-import Libri.Text.Normalize (normalizeText)
+import Libri.Text.Normalize (normalizeText, slugify)
 
 -- | Unique identifier for a book (UUID or ISBN)
 type BookId = Text
@@ -275,9 +278,20 @@ defaultConfig =
     , _fuzzyThreshold = 0.6
     }
 
--- | Generate filename for a book's YAML file
+-- | Short, filename-safe identity anchor derived from the book ID:
+-- its first 8 alphanumeric characters
+bookShortId :: Book -> Text
+bookShortId = T.take 8 . T.filter (\c -> isAscii c && isAlphaNum c) . _bookId
+
+-- | Canonical filename for a book's YAML file: readable title slug
+-- plus the short-ID suffix that ties the file to the book
 bookFilename :: Book -> FilePath
 bookFilename book =
-  let baseId = _bookId book
-      sanitized = T.unpack $ T.replace "/" "-" $ T.replace " " "_" baseId
+  T.unpack (slugify (_title book) <> "-" <> bookShortId book) <> ".yaml"
+
+-- | Filename used before slug-based names: the sanitised book ID.
+-- Kept so saves and deletes can find and clean up old files.
+legacyBookFilename :: Book -> FilePath
+legacyBookFilename book =
+  let sanitized = T.unpack $ T.replace "/" "-" $ T.replace " " "_" (_bookId book)
    in sanitized <> ".yaml"

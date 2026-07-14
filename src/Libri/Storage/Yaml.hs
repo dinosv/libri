@@ -10,6 +10,7 @@ module Libri.Storage.Yaml
   , saveConfig
   , saveLocations
   , deleteBook
+  , encodeFileAtomic
     -- * Merging
   , mergeBooks
     -- * Directory Management
@@ -120,7 +121,27 @@ encodeFileAtomic path val = do
   encodeFile tmp val
   renameFile tmp path
 
--- | Save a book to a YAML file
+-- | All files in the books directory that belong to this book:
+-- the canonical slug name, any older slug name sharing the short-ID
+-- suffix, and the legacy sanitised-ID name
+bookFileCandidates :: FilePath -> Book -> IO [FilePath]
+bookFileCandidates booksDir book = do
+  exists <- doesDirectoryExist booksDir
+  if not exists
+    then pure []
+    else do
+      files <- listDirectory booksDir
+      let sid = bookShortId book
+          suffix = "-" <> T.unpack sid <> ".yaml"
+          legacy = legacyBookFilename book
+          belongs f = (not (T.null sid) && suffix `isSuffixOf` f)
+            || f == legacy
+            || f == bookFilename book
+      pure [booksDir </> f | f <- files, belongs f]
+
+-- | Save a book to a YAML file. The file is named after the current
+-- title, so superseded names (title changed, or pre-slug legacy
+-- names) are removed once the new file is safely written.
 saveBook :: Config -> Book -> IO (Either LibriError ())
 saveBook cfg book = do
   dir <- getDataDir cfg
@@ -130,7 +151,10 @@ saveBook cfg book = do
   let book' = book & modified .~ now
       filename = bookFilename book'
       path = booksDir </> filename
-  result <- try $ encodeFileAtomic path book'
+  result <- try $ do
+    stale <- filter (/= path) <$> bookFileCandidates booksDir book'
+    encodeFileAtomic path book'
+    mapM_ removeFile stale
   case result of
     Left (e :: IOError) -> pure $ Left $ ParseError path (show e)
     Right () -> pure $ Right ()
@@ -159,20 +183,18 @@ mergeBooks calibre existing =
         , _custom = mergedCustom
         }
 
--- | Delete a book's YAML file
+-- | Delete a book's YAML file (canonical, older slug or legacy name)
 deleteBook :: Config -> Book -> IO (Either LibriError ())
 deleteBook cfg book = do
   dir <- getDataDir cfg
   let booksDir = dir </> "books"
-      filename = bookFilename book
-      path = booksDir </> filename
-  exists <- doesFileExist path
-  if not exists
-    then pure $ Left $ BookNotFound (_bookId book)
-    else do
-      result <- try $ removeFile path
+  paths <- bookFileCandidates booksDir book
+  case paths of
+    [] -> pure $ Left $ BookNotFound (_bookId book)
+    (firstPath : _) -> do
+      result <- try $ mapM_ removeFile paths
       case result of
-        Left (e :: IOError) -> pure $ Left $ ParseError path (show e)
+        Left (e :: IOError) -> pure $ Left $ ParseError firstPath (show e)
         Right () -> pure $ Right ()
 
 -- | Load configuration from YAML file

@@ -645,10 +645,7 @@ handleAddEditEvent ev st = do
             let mOrig = absOriginal abs'
             newId <- case mOrig of
               Just orig -> pure (orig ^. bookId)
-              Nothing -> do
-                if T.null (absIsbn abs')
-                  then liftIO $ UUID.toText <$> UUID.nextRandom
-                  else pure (T.filter (\c -> c /= '-' && c /= ' ') (absIsbn abs'))
+              Nothing -> liftIO $ UUID.toText <$> UUID.nextRandom
 
             -- Adding (not editing) must never silently overwrite or
             -- duplicate an existing book that shares the same ID/ISBN

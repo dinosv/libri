@@ -26,7 +26,10 @@ library
                     , Libri.Storage.CalibreImport
                     , Libri.CLI.Commands
                     , Libri.CLI.BatchImport
+                    , Libri.CLI.Doctor
                     , Libri.CLI.Enrich
+                    , Libri.CLI.Migrate
+                    , Libri.CLI.Tags
                     , Libri.Search.Fuzzy
                     , Libri.Text.Normalize
                     , Libri.ISBN.OpenLibrary
@@ -104,6 +107,9 @@ test-suite libri-test
                     , GroupedListSpec
                     , EnrichSpec
                     , TagSidebarSpec
+                    , TagsSpec
+                    , DoctorSpec
+                    , MigrateSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3
@@ -114,6 +120,7 @@ test-suite libri-test
                     , unicode-transforms >=0.4 && <0.5
                     , temporary >=1.3 && <2
                     , filepath >=1.4 && <2
+                    , directory >=1.3 && <2
     hs-source-dirs:   test
     default-language: GHC2021
     default-extensions: OverloadedStrings
