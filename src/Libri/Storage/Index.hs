@@ -34,6 +34,11 @@ data BookIndex = BookIndex
   }
   deriving (Show)
 
+-- | Normalize an ISBN for use as an index key, so that stored and queried
+-- ISBNs match regardless of dashes or spaces
+normalizeIsbnKey :: Text -> Text
+normalizeIsbnKey = T.filter (\c -> c /= '-' && c /= ' ')
+
 -- | Empty index
 emptyIndex :: BookIndex
 emptyIndex =
@@ -56,7 +61,7 @@ addBook book idx =
     { _byId = Map.insert (book ^. bookId) book (_byId idx)
     , _byISBN = case book ^. isbn of
         Nothing -> _byISBN idx
-        Just i -> Map.insert i book (_byISBN idx)
+        Just i -> Map.insert (normalizeIsbnKey i) book (_byISBN idx)
     , _byLocation = case book ^. location of
         Nothing -> _byLocation idx
         Just loc ->
@@ -92,7 +97,7 @@ removeBook book idx =
     { _byId = Map.delete bid (_byId idx)
     , _byISBN = case book ^. isbn of
         Nothing -> _byISBN idx
-        Just i -> Map.delete i (_byISBN idx)
+        Just i -> Map.delete (normalizeIsbnKey i) (_byISBN idx)
     , _byLocation = case book ^. location of
         Nothing -> _byLocation idx
         Just loc -> Map.update removeFromList loc (_byLocation idx)
@@ -112,9 +117,9 @@ removeBook book idx =
 lookupById :: BookId -> BookIndex -> Maybe Book
 lookupById bid idx = Map.lookup bid (_byId idx)
 
--- | Lookup a book by ISBN
+-- | Lookup a book by ISBN (dash- and space-insensitive)
 lookupByISBN :: Text -> BookIndex -> Maybe Book
-lookupByISBN i idx = Map.lookup i (_byISBN idx)
+lookupByISBN i idx = Map.lookup (normalizeIsbnKey i) (_byISBN idx)
 
 -- | Filter books by location
 filterByLocation :: Location -> BookIndex -> [Book]

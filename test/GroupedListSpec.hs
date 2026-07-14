@@ -73,6 +73,20 @@ spec = describe "GroupedList" $ do
           headers = [t | SectionHeader t _ <- items, t /= "(Untagged)"]
       headers `shouldBe` ["Art", "History", "Philosophy", "Religion"]
 
+    it "returns an empty list for an empty library" $ do
+      buildGroupedList GroupByTag SortByTitle Ascending [] `shouldBe` []
+      buildGroupedList GroupByAuthor SortByTitle Ascending [] `shouldBe` []
+
+    it "keeps a tag literally named like the author sentinel" $ do
+      let oddBook = makeBook "5" "Odd" ["Someone"] ["(Unknown)"]
+          items = buildGroupedList GroupByTag SortByTitle Ascending [oddBook]
+          headers = [t | SectionHeader t _ <- items]
+      headers `shouldBe` ["(Unknown)"]
+
+    it "lastSelectableIndex finds the last book row" $ do
+      let items = buildGroupedList GroupByTag SortByTitle Ascending testBooks
+      lastSelectableIndex items `shouldBe` (length items - 1)
+
   describe "navigation" $ do
     it "nextSelectableIndex skips headers" $ do
       let items = [ SectionHeader "Art" 1

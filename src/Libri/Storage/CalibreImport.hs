@@ -11,7 +11,9 @@ import Control.Exception (bracket, try, SomeException)
 import Control.Monad (forM)
 import Data.Aeson (Value (..))
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Scientific (fromFloatDigits)
+import qualified Data.Vector as V
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (Day, UTCTime, getCurrentTime, parseTimeM, defaultTimeLocale)
@@ -154,25 +156,51 @@ getCustomColumns conn bid = do
   cols <- query_ conn
     "SELECT id, label, name, datatype FROM custom_columns" :: IO [(Int, T.Text, T.Text, T.Text)]
 
-  pairs <- forM cols $ \(colId, label, _name, _datatype) -> do
-    let tableName = "custom_column_" <> show colId
-    val <- getCustomValue conn tableName bid
+  pairs <- forM cols $ \(colId, label, _name, datatype) -> do
+    val <- getCustomValue conn colId bid datatype
     pure $ case val of
       Nothing -> Nothing
       Just v -> Just (label, v)
 
   pure $ Map.fromList $ catMaybes pairs
 
--- | Get a single custom column value
-getCustomValue :: Connection -> String -> Int -> IO (Maybe Value)
-getCustomValue conn tableName bid = do
-  result <- try $ query conn
-    (Query $ T.pack $ "SELECT value FROM " <> tableName <> " WHERE book = ?")
-    (Only bid) :: IO (Either SomeException [Only T.Text])
-  case result of
-    Left _ -> pure Nothing
-    Right [] -> pure Nothing
-    Right (Only v : _) -> pure $ Just $ String v
+-- | Get a single custom column value.
+-- Calibre stores plain columns (int, float, bool, datetime, long text)
+-- directly in @custom_column_N(book, value)@, but normalized columns
+-- (text, enumeration, series -- including multi-value columns) keep values
+-- in @custom_column_N(id, value)@ joined via @books_custom_column_N_link@.
+getCustomValue :: Connection -> Int -> Int -> T.Text -> IO (Maybe Value)
+getCustomValue conn colId bid datatype = do
+  let tbl = "custom_column_" <> show colId
+      linkTbl = "books_custom_column_" <> show colId <> "_link"
+      directQ = Query $ T.pack $
+        "SELECT value FROM " <> tbl <> " WHERE book = ?"
+      linkedQ = Query $ T.pack $
+        "SELECT cc.value FROM " <> tbl <> " cc JOIN " <> linkTbl
+        <> " l ON l.value = cc.id WHERE l.book = ?"
+  direct <- tryQuery directQ
+  rows <- case direct of
+    Right rs -> pure rs
+    Left _ -> either (const []) id <$> tryQuery linkedQ
+  pure $ case mapMaybe (sqlToValue datatype) rows of
+    []  -> Nothing
+    [v] -> Just v
+    vs  -> Just $ Array (V.fromList vs)
+  where
+    tryQuery q = fmap (map fromOnly) <$>
+      (try (query conn q (Only bid)) :: IO (Either SomeException [Only SQLData]))
+
+-- | Convert a raw SQLite value to JSON, using the column datatype
+-- to distinguish booleans from plain integers
+sqlToValue :: T.Text -> SQLData -> Maybe Value
+sqlToValue datatype sql = case sql of
+  SQLText t -> Just $ String t
+  SQLInteger i
+    | datatype == "bool" -> Just $ Bool (i /= 0)
+    | otherwise -> Just $ Number (fromIntegral i)
+  SQLFloat d -> Just $ Number (fromFloatDigits d)
+  SQLBlob _ -> Nothing
+  SQLNull -> Nothing
 
 -- | Convert a Calibre book to our Book type
 convertBook

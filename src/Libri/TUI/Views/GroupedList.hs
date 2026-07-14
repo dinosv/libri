@@ -5,6 +5,7 @@ module Libri.TUI.Views.GroupedList
   , nextSelectableIndex
   , prevSelectableIndex
   , firstSelectableIndex
+  , lastSelectableIndex
   ) where
 
 import Brick
@@ -25,9 +26,11 @@ data ListItem
 buildGroupedList :: GroupField -> SortField -> SortOrder -> [Book] -> [ListItem]
 buildGroupedList field sortF sortO bks =
   let grouped = groupBooks field bks
-      sortedKeys = sortBy (comparing fst)
-                   [(k, vs) | (k, vs) <- Map.toList grouped, k /= "(Untagged)", k /= "(Unknown)"]
       untaggedKey = if field == GroupByTag then "(Untagged)" else "(Unknown)"
+      -- Only the active sentinel is special-cased; a real tag/author that
+      -- happens to match the other mode's sentinel must not disappear
+      sortedKeys = sortBy (comparing fst)
+                   [(k, vs) | (k, vs) <- Map.toList grouped, k /= untaggedKey]
       untagged = Map.lookup untaggedKey grouped
       sections = map (buildSection sortF sortO) sortedKeys
       untaggedSection = case untagged of
@@ -123,6 +126,12 @@ prevSelectableIndex items current =
 firstSelectableIndex :: [ListItem] -> Int
 firstSelectableIndex items =
   case [i | (i, item) <- zip [0..] items, isBookRow item] of
+    (x:_) -> x
+    []    -> 0
+
+lastSelectableIndex :: [ListItem] -> Int
+lastSelectableIndex items =
+  case reverse [i | (i, item) <- zip [0..] items, isBookRow item] of
     (x:_) -> x
     []    -> 0
 

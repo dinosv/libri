@@ -88,6 +88,12 @@ spec = describe "Fuzzy Search" $ do
     it "returns high score for longer prefix match" $ do
       fuzzyMatch "prog" "programming" `shouldSatisfy` (>= 0.85)
 
+    it "does not match unrelated short words differing by one edit" $ do
+      fuzzyMatch "war" "way" `shouldBe` 0
+
+    it "still matches identical short words" $ do
+      fuzzyMatch "war" "war" `shouldBe` 1.0
+
   describe "searchBooks" $ do
     it "ranks exact title match first" $ do
       let results = searchBooks testThreshold "Pragmatic" testBooks
@@ -111,6 +117,10 @@ spec = describe "Fuzzy Search" $ do
       let results = searchBooks testThreshold "" testBooks
       length results `shouldBe` 3
 
+    it "returns nothing for an empty library" $ do
+      searchBooks testThreshold "anything" [] `shouldBe` []
+      map srBook (searchBooksWithScore testThreshold "anything" []) `shouldBe` []
+
     it "ranks title matches higher than author matches" $ do
       let results = searchBooks testThreshold "Programming" testBooks
       case results of
@@ -118,16 +128,30 @@ spec = describe "Fuzzy Search" $ do
         []    -> expectationFailure "expected results"
 
   describe "short query behavior" $ do
-    it "uses exact match for queries < 3 chars" $ do
+    it "uses exact substring match for queries < 3 chars" $ do
+      -- "an" appears in "Cle-an- Code" and "-An-drew Hunt" only
       let results = searchBooksExact "an" testBooks
-      -- Should find books with "an" substring
-      length results `shouldSatisfy` (>= 0)
+      map _bookId results `shouldBe` ["1", "2"]
 
   describe "majority word matching" $ do
     it "requires majority of query words to match" $ do
       -- "Programming Pearls" should match "Programming" query
       let results = searchBooks testThreshold "Programming" testBooks
       length results `shouldSatisfy` (> 0)
+
+    it "matches multi-word queries when at least half the words match" $ do
+      -- book3 matches both words and must rank first; book1 matches
+      -- only "Programming" (via "Programmer") -- half of two words
+      let results = searchBooks testThreshold "Programming Bentley" testBooks
+      map _bookId results `shouldContain` ["3"]
+      case results of
+        (r:_) -> _bookId r `shouldBe` "3"
+        [] -> expectationFailure "expected results"
+
+    it "excludes books matching fewer than half the query words" $ do
+      -- book2 matches neither word and must not appear
+      let results = searchBooks testThreshold "Programming Bentley" testBooks
+      map _bookId results `shouldNotContain` ["2"]
 
   describe "accent-insensitive search" $ do
     let accentBooks =

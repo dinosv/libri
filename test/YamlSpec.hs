@@ -4,8 +4,10 @@ import qualified Data.Map.Strict as Map
 import Data.Aeson (Value(..))
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
-import Libri.Storage.Yaml (mergeBooks)
-import Libri.Types (Book(..))
+import Libri.Storage.Yaml (mergeBooks, saveBook, loadBook, loadBooksWithErrors)
+import Libri.Types (Book(..), Config(..), bookFilename, defaultConfig)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
 spec :: Spec
@@ -75,3 +77,57 @@ spec = describe "YAML Storage" $ do
       let merged = mergeBooks calibreBook existingBook
       _bookId merged `shouldBe` "42"
       _bookId merged `shouldNotBe` "calibre-42"
+
+  describe "persistence round-trip" $ do
+    let testTime = UTCTime (fromGregorian 2025 3 1) 0
+        sampleBook = Book
+          { _bookId = "rt-1"
+          , _isbn = Just "9780134685991"
+          , _title = "Round Trip"
+          , _authors = ["Ada Author", "Bob Writer"]
+          , _series = Just "A Series"
+          , _seriesIndex = Just 2.5
+          , _publisher = Just "Pub"
+          , _published = Just (fromGregorian 2020 6 15)
+          , _tags = ["tag1", "tag2"]
+          , _rating = Just 4
+          , _comments = Just "Some notes"
+          , _location = Just "Shelf A"
+          , _custom = Map.fromList [("myfield", String "v"), ("count", Number 3)]
+          , _added = testTime
+          , _modified = testTime
+          }
+
+    it "saveBook then loadBook preserves every field except modified" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let cfg = defaultConfig { _dataDir = dir }
+        saveResult <- saveBook cfg sampleBook
+        saveResult `shouldBe` Right ()
+        loaded <- loadBook (dir </> "books" </> bookFilename sampleBook)
+        case loaded of
+          Left err -> expectationFailure (show err)
+          Right b -> do
+            _bookId b `shouldBe` _bookId sampleBook
+            _isbn b `shouldBe` _isbn sampleBook
+            _title b `shouldBe` _title sampleBook
+            _authors b `shouldBe` _authors sampleBook
+            _series b `shouldBe` _series sampleBook
+            _seriesIndex b `shouldBe` _seriesIndex sampleBook
+            _publisher b `shouldBe` _publisher sampleBook
+            _published b `shouldBe` _published sampleBook
+            _tags b `shouldBe` _tags sampleBook
+            _rating b `shouldBe` _rating sampleBook
+            _comments b `shouldBe` _comments sampleBook
+            _location b `shouldBe` _location sampleBook
+            _custom b `shouldBe` _custom sampleBook
+            _added b `shouldBe` _added sampleBook
+
+    it "loadBooksWithErrors skips corrupt files but loads the rest" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let cfg = defaultConfig { _dataDir = dir }
+        saveResult <- saveBook cfg sampleBook
+        saveResult `shouldBe` Right ()
+        writeFile (dir </> "books" </> "corrupt.yaml") "{ not: [valid yaml"
+        (errs, bks) <- loadBooksWithErrors cfg
+        length errs `shouldBe` 1
+        map _bookId bks `shouldBe` [_bookId sampleBook]

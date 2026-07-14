@@ -13,16 +13,16 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Lens.Micro ((^.), (&), (.~))
 import Libri.ISBN.OpenLibrary (fetchByISBNWith, newISBNManager)
-import Libri.Storage.Yaml (loadBooks, saveBook)
+import Libri.Storage.Yaml (loadBooksWithErrors, saveBook)
 import Libri.Text.Normalize (normalizeText)
 import Libri.Types
 import Network.HTTP.Client (Manager)
 import System.IO (hFlush, stdout, hPutStrLn, stderr)
-import System.Exit (exitFailure)
 
 data EnrichResult
   = Enriched Int Bool
   | NotFound
+  | FetchFailed Text
   | AlreadyComplete
   | NoISBN
   deriving (Show, Eq)
@@ -48,7 +48,7 @@ enrichBook mgr book =
       result <- fetchByISBNWith mgr isbnVal
       case result of
         Left (ISBNNotFound _) -> pure (book, NotFound)
-        Left _ -> pure (book, NotFound)
+        Left err -> pure (book, FetchFailed (T.pack (show err)))
         Right fetched ->
           let newTags = mergeTags (book ^. tags) (fetched ^. tags)
               tagsAdded = length newTags - length (book ^. tags)
@@ -62,12 +62,11 @@ enrichBook mgr book =
 
 runEnrich :: Config -> IO ()
 runEnrich cfg = do
-  booksResult <- loadBooks cfg
-  case booksResult of
-    Left err -> do
-      hPutStrLn stderr $ "Error loading books: " <> show err
-      exitFailure
-    Right bks -> do
+  (loadErrs, bks) <- loadBooksWithErrors cfg
+  mapM_ (\(path, err) -> hPutStrLn stderr $
+          "Warning: skipping unreadable book file " <> path <> ": " <> show err)
+        loadErrs
+  do
       let toEnrich = filter needsEnrichment bks
           total = length toEnrich
       if total == 0
@@ -84,24 +83,31 @@ runEnrich cfg = do
                       <> "... "
             hFlush stdout
             (enriched, res) <- enrichBook mgr book
-            printResult res
-            case res of
-              Enriched _ _ -> do
-                saveResult <- saveBook cfg enriched
-                case saveResult of
-                  Left err -> TIO.putStrLn $ "    save error: " <> T.pack (show err)
-                  Right () -> pure ()
-              _ -> pure ()
+            -- Only save when something actually changed, and only count
+            -- the book as updated when the save succeeded
+            final <- case res of
+              Enriched tagCount hasDesc
+                | tagCount > 0 || hasDesc -> do
+                    saveResult <- saveBook cfg enriched
+                    case saveResult of
+                      Left err -> pure $ FetchFailed ("save failed: " <> tshow err)
+                      Right () -> pure res
+                | otherwise -> pure AlreadyComplete
+              _ -> pure res
+            printResult final
             threadDelay 1000000
-            pure res
+            pure final
 
           let updated = length [() | Enriched _ _ <- results]
               notFound = length [() | NotFound <- results]
+              failed = length [() | FetchFailed _ <- results]
           TIO.putStrLn ""
           TIO.putStrLn "Enrichment complete!"
           TIO.putStrLn $ "  " <> tshow updated <> " books updated"
           when (notFound > 0) $
             TIO.putStrLn $ "  " <> tshow notFound <> " books not found on OpenLibrary"
+          when (failed > 0) $
+            TIO.putStrLn $ "  " <> tshow failed <> " books failed (network or save errors)"
   where
     tshow :: Show a => a -> Text
     tshow = T.pack . show
@@ -114,5 +120,6 @@ printResult (Enriched tagCount hasDesc) = do
     [] -> TIO.putStrLn "no new data"
     _  -> TIO.putStrLn $ T.intercalate ", " parts
 printResult NotFound = TIO.putStrLn "not found"
-printResult AlreadyComplete = TIO.putStrLn "already complete"
+printResult (FetchFailed msg) = TIO.putStrLn $ "error: " <> msg
+printResult AlreadyComplete = TIO.putStrLn "no new data"
 printResult NoISBN = TIO.putStrLn "no ISBN"

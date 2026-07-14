@@ -62,13 +62,13 @@ searchBooksWithScore threshold query bks
           filtered = filter (\sr -> srScore sr >= threshold) results
       in sortBy (comparing (Down . srScore)) filtered
 
--- | Check if majority (>50%) of query tokens have a match in the book
+-- | Check if at least half (ceiling n/2) of query tokens have a match in the book
 hasMajorityMatches :: [Text] -> Book -> Bool
 hasMajorityMatches queryTokens book
   | null queryTokens = True
   | otherwise =
       let matchCount = countMatchingTokens queryTokens book
-          required = (length queryTokens + 1) `div` 2  -- ceiling of half
+          required = (length queryTokens + 1) `div` 2  -- at least half
       in matchCount >= required
 
 -- | Count how many query tokens have a match in the book
@@ -125,6 +125,9 @@ minSubstringLength :: Int
 minSubstringLength = 4
 
 -- | Calculate fuzzy match score between two tokens (0.0 to 1.0)
+-- Edit-distance fallback is disabled for very short tokens: a single edit
+-- on a 3-letter word ("war" vs "way") already scores above the match
+-- threshold despite the words being unrelated.
 fuzzyMatch :: Text -> Text -> Double
 fuzzyMatch query target
   | T.null query || T.null target = 0
@@ -132,6 +135,7 @@ fuzzyMatch query target
   | T.length query >= minQueryLength && query `T.isPrefixOf` target = 0.85
   | T.length query >= minSubstringLength && query `T.isInfixOf` target = 0.9
   | T.length target >= minSubstringLength && target `T.isInfixOf` query = 0.8
+  | T.length query < minSubstringLength || T.length target < minSubstringLength = 0
   | otherwise = levenshteinSimilarity query target
 
 -- | Calculate similarity based on Levenshtein distance using text-metrics

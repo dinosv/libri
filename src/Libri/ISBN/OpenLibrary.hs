@@ -59,9 +59,10 @@ parseAuthorKeys = fmap catMaybes . mapM parseAuthorKey
     parseAuthorKey (Object o) = o .:? "key"
     parseAuthorKey _ = pure Nothing
 
--- | Parse subjects from various formats
+-- | Parse subjects from various formats, dropping malformed entries
+-- instead of turning them into empty tags
 parseSubjects :: [Value] -> Parser [Text]
-parseSubjects = mapM parseSubject
+parseSubjects = fmap (filter (not . T.null)) . mapM parseSubject
   where
     parseSubject (Object o) = o .:? "name" .!= ""
     parseSubject (String s) = pure s

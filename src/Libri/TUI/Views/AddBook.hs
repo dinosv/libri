@@ -7,6 +7,7 @@ module Libri.TUI.Views.AddBook
   , updateCurrentField
   , parseCommaSeparated
   , filterRating
+  , valueToText
   ) where
 
 import Brick
@@ -16,7 +17,6 @@ import Data.Aeson (Value(..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (UTCTime)
 import Lens.Micro ((^.), (&))
 import Libri.TUI.Widgets.Common
 import Libri.Types
@@ -37,8 +37,8 @@ data AddBookState = AddBookState
   , absEditingCustom :: Bool  -- Whether in custom field mode
   , absCurrentField :: Int    -- Which field is selected (0-9)
   , absIsEdit :: Bool
-  , absOriginalId :: Maybe BookId
-  , absOriginalAdded :: Maybe UTCTime
+  , absOriginal :: Maybe Book -- Original book when editing, to preserve
+                              -- fields the form does not expose
   }
   deriving (Show)
 
@@ -59,8 +59,7 @@ initAddBookState = AddBookState
   , absEditingCustom = False
   , absCurrentField = 0
   , absIsEdit = False
-  , absOriginalId = Nothing
-  , absOriginalAdded = Nothing
+  , absOriginal = Nothing
   }
 
 -- | Initialize edit state from existing book
@@ -80,8 +79,7 @@ initEditBookState book = AddBookState
   , absEditingCustom = False
   , absCurrentField = 0
   , absIsEdit = True
-  , absOriginalId = Just (book ^. bookId)
-  , absOriginalAdded = Just (book ^. added)
+  , absOriginal = Just book
   }
 
 -- | Convert Aeson Value to Text for display

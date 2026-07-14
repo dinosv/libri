@@ -5,18 +5,19 @@ module Libri.TUI.App
 
 import Brick
 import Brick.Widgets.Border
+import Control.Applicative ((<|>))
 import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Value(..))
 import Data.List (nub, sort, sortBy)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, listToMaybe, fromMaybe)
+import Data.Maybe (catMaybes, listToMaybe, fromMaybe, isJust)
 import Data.Ord (comparing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time (Day, getCurrentTime, fromGregorian)
+import Data.Time (Day, getCurrentTime, fromGregorian, parseTimeM, defaultTimeLocale)
 import Text.Read (readMaybe)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
@@ -25,13 +26,13 @@ import Graphics.Vty.CrossPlatform (mkVty)
 import Lens.Micro ((^.), (&), (.~), (%~))
 import Libri.ISBN.OpenLibrary (fetchByISBN)
 import Libri.Search.Fuzzy (searchBooks)
-import Libri.Storage.Yaml (loadBooks, loadLocations, saveBook, deleteBook)
+import Libri.Storage.Yaml (loadBooksWithErrors, loadLocations, saveBook, deleteBook)
 import Libri.Text.Normalize (normalizeText)
 import Libri.TUI.CommandBar (CommandBarState(..), Command(..), initCommandBarState, parseCommand, completeNext, renderCommandBar)
 import Libri.TUI.Views.AddBook
 import Libri.TUI.Views.BookDetails (renderBookDetails)
 import Libri.TUI.Views.BookList (renderBookList)
-import Libri.TUI.Views.GroupedList (ListItem(..), buildGroupedList, renderGroupedList, nextSelectableIndex, prevSelectableIndex, firstSelectableIndex)
+import Libri.TUI.Views.GroupedList (ListItem(..), buildGroupedList, renderGroupedList, nextSelectableIndex, prevSelectableIndex, firstSelectableIndex, lastSelectableIndex)
 import Libri.TUI.Views.MoveBook
 import Libri.TUI.Views.Search (renderSearchBar)
 import Libri.TUI.Widgets.Common
@@ -45,7 +46,9 @@ import System.Process (callProcess)
 data TUIState = TUIState
   { tuiAppState :: AppState
   , tuiMessage :: Maybe Text        -- Status message
-  , tuiConfirmDelete :: Bool        -- Confirm delete dialog
+  , tuiConfirmDelete :: Maybe BookId -- ID of the book armed for deletion,
+                                     -- so navigating away cannot delete
+                                     -- a different book unconfirmed
   , tuiAddBookState :: Maybe AddBookState   -- Add/Edit form state
   , tuiMoveBookState :: Maybe MoveBookState -- Move dialog state
   , tuiPendingKey :: Maybe Char     -- For two-key sequences like 'st', 'sa', 'sd'
@@ -57,11 +60,10 @@ data TUIState = TUIState
 runTUI :: Config -> IO ()
 runTUI cfg = do
   -- Load initial data
-  booksResult <- loadBooks cfg
+  (loadErrs, books') <- loadBooksWithErrors cfg
   locsResult <- loadLocations cfg
 
-  let books' = either (const []) id booksResult
-      locs = either (const []) id locsResult
+  let locs = either (const []) id locsResult
       sortedBooks = sortBy (comparing (^. title)) books'
 
   let initialState = TUIState
@@ -77,10 +79,12 @@ runTUI cfg = do
             , _activeFilter = Nothing
             , _groupMode = Nothing
             }
-        , tuiMessage = case booksResult of
-            Left err -> Just $ "Error loading books: " <> T.pack (show err)
-            Right bs -> Just $ "Loaded " <> T.pack (show (length bs)) <> " books"
-        , tuiConfirmDelete = False
+        , tuiMessage = Just $
+            "Loaded " <> T.pack (show (length books')) <> " books"
+            <> (if null loadErrs
+                  then ""
+                  else " (" <> T.pack (show (length loadErrs)) <> " files unreadable)")
+        , tuiConfirmDelete = Nothing
         , tuiAddBookState = Nothing
         , tuiMoveBookState = Nothing
         , tuiPendingKey = Nothing
@@ -112,17 +116,23 @@ drawUI st =
   in case appSt ^. currentView of
        ViewAdd ->
          case tuiAddBookState st of
-           Just abs' -> [renderAddBook abs']
+           Just abs' -> [withFormMessage (tuiMessage st) (renderAddBook abs')]
            Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
        ViewEdit _ ->
          case tuiAddBookState st of
-           Just abs' -> [renderEditBook abs']
+           Just abs' -> [withFormMessage (tuiMessage st) (renderEditBook abs')]
            Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
        ViewMove _ ->
          case tuiMoveBookState st of
-           Just mbs -> [renderMoveBook mbs]
+           Just mbs -> [withFormMessage (tuiMessage st) (renderMoveBook mbs)]
            Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
        _ -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
+
+-- | Show the status message underneath dialog views, which otherwise
+-- give no feedback for validation and save errors
+withFormMessage :: Maybe Text -> Widget Name -> Widget Name
+withFormMessage Nothing w = w
+withFormMessage (Just m) w = vBox [w, withAttr helpAttr $ padLeftRight 1 $ txt m]
 
 -- | Get books filtered by search query and sorted
 getVisibleBooks :: AppState -> [Book]
@@ -159,6 +169,22 @@ applySortOrder field order bks =
     head' (x :| _) = x
     nonEmpty [] = Nothing
     nonEmpty (x:xs) = Just (x :| xs)
+
+-- | Reload books from disk, sorted by title
+reloadBooks :: Config -> IO ([(FilePath, LibriError)], [Book])
+reloadBooks cfg = do
+  (errs, bks) <- loadBooksWithErrors cfg
+  pure (errs, sortBy (comparing (^. title)) bks)
+
+-- | Index to select after the visible list changes: the first book row,
+-- skipping section headers when grouping is active
+resetIndex :: AppState -> Int
+resetIndex appSt =
+  case appSt ^. groupMode of
+    Nothing -> 0
+    Just gf ->
+      let items = buildGroupedList gf (appSt ^. sortField) (appSt ^. sortOrder) (getVisibleBooks appSt)
+      in firstSelectableIndex items
 
 -- | Get the currently selected book
 getSelectedBook :: AppState -> [Book] -> Maybe Book
@@ -296,15 +322,16 @@ handleEvent ev = do
       -- Handle search input
       case ev of
         VtyEvent (V.EvKey V.KEsc []) ->
-          put $ st { tuiAppState = appSt & currentView .~ ViewList
-                                         & searchQuery .~ ""
-                   , tuiMessage = Nothing
-                   }
+          let newAppSt = appSt & currentView .~ ViewList
+                               & searchQuery .~ ""
+          in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                      , tuiMessage = Nothing
+                      }
         VtyEvent (V.EvKey V.KEnter []) ->
-          put $ st { tuiAppState = appSt & currentView .~ ViewList
-                                         & selectedIndex .~ 0
-                   , tuiMessage = Just $ "Search: " <> (appSt ^. searchQuery)
-                   }
+          let newAppSt = appSt & currentView .~ ViewList
+          in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                      , tuiMessage = Just $ "Search: " <> (appSt ^. searchQuery)
+                      }
         VtyEvent (V.EvKey V.KBS []) ->
           put $ st { tuiAppState = appSt & searchQuery %~ T.dropEnd 1 }
         VtyEvent (V.EvKey (V.KChar c) []) ->
@@ -329,13 +356,46 @@ handleListViewEvent ev st = do
   let appSt = tuiAppState st
       cfg = appSt ^. config
       visibleBooks = getVisibleBooks appSt
+      -- Grouped-mode item list, when grouping is active
+      mItems = case appSt ^. groupMode of
+        Nothing -> Nothing
+        Just gf -> Just (buildGroupedList gf (appSt ^. sortField) (appSt ^. sortOrder) visibleBooks)
+      firstIdx = maybe 0 firstSelectableIndex mItems
+      lastIdx = maybe (max 0 (length visibleBooks - 1)) lastSelectableIndex mItems
+      pageUpIdx i = case mItems of
+        Nothing -> max 0 (i - 10)
+        Just items -> iterate (prevSelectableIndex items) i !! 10
+      pageDownIdx i = case mItems of
+        Nothing -> max 0 (min (length visibleBooks - 1) (i + 10))
+        Just items -> iterate (nextSelectableIndex items) i !! 10
+      -- Complete or cancel a pending 's' sort sequence
+      applySort sf =
+        let newOrder = if appSt ^. sortField == sf
+                         then toggleSortOrder (appSt ^. sortOrder)
+                         else Ascending
+            newAppSt = appSt & sortField .~ sf
+                             & sortOrder .~ newOrder
+        in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                    , tuiPendingKey = Nothing
+                    , tuiMessage = Just $ "Sorted by " <> sortFieldName sf <> " " <> sortArrow newOrder
+                    , tuiConfirmDelete = Nothing
+                    }
 
   case ev of
+    -- Pending sort sequence: the next key either completes it or cancels it,
+    -- so stale pending state can never hijack later 'a'/'d' presses
+    VtyEvent (V.EvKey key _) | tuiPendingKey st == Just 's' ->
+      case key of
+        V.KChar 't' -> applySort SortByTitle
+        V.KChar 'a' -> applySort SortByAuthor
+        V.KChar 'd' -> applySort SortByDate
+        _ -> put $ st { tuiPendingKey = Nothing, tuiMessage = Nothing }
+
     -- Quit
     VtyEvent (V.EvKey (V.KChar 'q') []) -> halt
     VtyEvent (V.EvKey V.KEsc []) ->
-      if tuiConfirmDelete st
-        then put $ st { tuiConfirmDelete = False, tuiMessage = Just "Delete cancelled" }
+      if isJust (tuiConfirmDelete st)
+        then put $ st { tuiConfirmDelete = Nothing, tuiMessage = Just "Delete cancelled" }
         else halt
 
     -- Navigation
@@ -344,13 +404,13 @@ handleListViewEvent ev st = do
     VtyEvent (V.EvKey (V.KChar 'k') []) -> navigateUp st appSt visibleBooks
     VtyEvent (V.EvKey (V.KChar 'j') []) -> navigateDown st appSt visibleBooks
     VtyEvent (V.EvKey V.KHome []) ->
-      put $ st { tuiAppState = appSt & selectedIndex .~ 0 }
+      put $ st { tuiAppState = appSt & selectedIndex .~ firstIdx }
     VtyEvent (V.EvKey V.KEnd []) ->
-      put $ st { tuiAppState = appSt & selectedIndex .~ max 0 (length visibleBooks - 1) }
+      put $ st { tuiAppState = appSt & selectedIndex .~ lastIdx }
     VtyEvent (V.EvKey V.KPageUp []) ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ max 0 . subtract 10 }
+      put $ st { tuiAppState = appSt & selectedIndex %~ pageUpIdx }
     VtyEvent (V.EvKey V.KPageDown []) ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ min (length visibleBooks - 1) . (+ 10) }
+      put $ st { tuiAppState = appSt & selectedIndex %~ pageDownIdx }
 
     -- Search
     VtyEvent (V.EvKey (V.KChar '/') []) ->
@@ -360,45 +420,46 @@ handleListViewEvent ev st = do
 
     -- Clear search
     VtyEvent (V.EvKey (V.KChar 'c') [V.MCtrl]) ->
-      put $ st { tuiAppState = appSt & searchQuery .~ ""
-                                     & selectedIndex .~ 0
-               , tuiMessage = Just "Search cleared"
-               }
+      let newAppSt = appSt & searchQuery .~ ""
+      in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                  , tuiMessage = Just "Search cleared"
+                  }
 
-    -- Delete (only when no pending key)
-    VtyEvent (V.EvKey (V.KChar 'd') []) | tuiPendingKey st == Nothing ->
+    -- Delete: first press arms deletion of the selected book; the second
+    -- press only deletes if the selection is still that same book
+    VtyEvent (V.EvKey (V.KChar 'd') []) ->
       case getSelectedBook appSt visibleBooks of
         Nothing -> pure ()
         Just book ->
-          if tuiConfirmDelete st
+          if tuiConfirmDelete st == Just (book ^. bookId)
             then do
               -- Actually delete
               result <- liftIO $ deleteBook cfg book
               case result of
                 Left err ->
                   put $ st { tuiMessage = Just $ "Error: " <> T.pack (show err)
-                           , tuiConfirmDelete = False
+                           , tuiConfirmDelete = Nothing
                            }
                 Right () -> do
                   -- Reload books
-                  booksResult <- liftIO $ loadBooks cfg
-                  let newBooks = either (const []) (sortBy (comparing (^. title))) booksResult
+                  (_, newBooks) <- liftIO $ reloadBooks cfg
                   put $ st { tuiAppState = appSt & books .~ newBooks
-                                                 & selectedIndex %~ min (length newBooks - 1) . max 0
+                                                 & selectedIndex %~ max 0 . min (length newBooks - 1)
                            , tuiMessage = Just $ "Deleted: " <> (book ^. title)
-                           , tuiConfirmDelete = False
+                           , tuiConfirmDelete = Nothing
                            }
             else
               put $ st { tuiMessage = Just $ "Press 'd' again to delete: " <> (book ^. title)
-                       , tuiConfirmDelete = True
+                       , tuiConfirmDelete = Just (book ^. bookId)
                        }
 
     -- Refresh
     VtyEvent (V.EvKey (V.KChar 'r') []) -> do
-      booksResult <- liftIO $ loadBooks cfg
-      let newBooks = either (const []) (sortBy (comparing (^. title))) booksResult
+      (errs, newBooks) <- liftIO $ reloadBooks cfg
       put $ st { tuiAppState = appSt & books .~ newBooks
                , tuiMessage = Just $ "Refreshed: " <> T.pack (show (length newBooks)) <> " books"
+                   <> (if null errs then "" else " (" <> T.pack (show (length errs)) <> " files unreadable)")
+               , tuiConfirmDelete = Nothing
                }
 
     -- Command bar
@@ -415,11 +476,12 @@ handleListViewEvent ev st = do
     VtyEvent (V.EvKey (V.KChar '?') []) ->
       put $ st { tuiMessage = Just "j/k:nav /search a:add e:edit d:del m:move r:refresh q:quit" }
 
-    -- Add new book (only when no pending key)
-    VtyEvent (V.EvKey (V.KChar 'a') []) | tuiPendingKey st == Nothing ->
+    -- Add new book
+    VtyEvent (V.EvKey (V.KChar 'a') []) ->
       put $ st { tuiAppState = appSt & currentView .~ ViewAdd
                , tuiAddBookState = Just initAddBookState
                , tuiMessage = Nothing
+               , tuiConfirmDelete = Nothing
                }
 
     -- Edit selected book
@@ -451,52 +513,13 @@ handleListViewEvent ev st = do
     VtyEvent (V.EvKey (V.KChar 's') []) ->
       put $ st { tuiPendingKey = Just 's'
                , tuiMessage = Just "Sort: [t]itle [a]uthor [d]ate"
-               , tuiConfirmDelete = False
+               , tuiConfirmDelete = Nothing
                }
 
-    -- Sort by title: 't' after 's'
-    VtyEvent (V.EvKey (V.KChar 't') []) | tuiPendingKey st == Just 's' ->
-      let newOrder = if appSt ^. sortField == SortByTitle
-                       then toggleSortOrder (appSt ^. sortOrder)
-                       else Ascending
-      in put $ st { tuiAppState = appSt & sortField .~ SortByTitle
-                                        & sortOrder .~ newOrder
-                                        & selectedIndex .~ 0
-                  , tuiPendingKey = Nothing
-                  , tuiMessage = Just $ "Sorted by title " <> sortArrow newOrder
-                  , tuiConfirmDelete = False
-                  }
-
-    -- Sort by author: 'a' after 's'
-    VtyEvent (V.EvKey (V.KChar 'a') []) | tuiPendingKey st == Just 's' ->
-      let newOrder = if appSt ^. sortField == SortByAuthor
-                       then toggleSortOrder (appSt ^. sortOrder)
-                       else Ascending
-      in put $ st { tuiAppState = appSt & sortField .~ SortByAuthor
-                                        & sortOrder .~ newOrder
-                                        & selectedIndex .~ 0
-                  , tuiPendingKey = Nothing
-                  , tuiMessage = Just $ "Sorted by author " <> sortArrow newOrder
-                  , tuiConfirmDelete = False
-                  }
-
-    -- Sort by date: 'd' after 's'
-    VtyEvent (V.EvKey (V.KChar 'd') []) | tuiPendingKey st == Just 's' ->
-      let newOrder = if appSt ^. sortField == SortByDate
-                       then toggleSortOrder (appSt ^. sortOrder)
-                       else Ascending
-      in put $ st { tuiAppState = appSt & sortField .~ SortByDate
-                                        & sortOrder .~ newOrder
-                                        & selectedIndex .~ 0
-                  , tuiPendingKey = Nothing
-                  , tuiMessage = Just $ "Sorted by date " <> sortArrow newOrder
-                  , tuiConfirmDelete = False
-                  }
-
-    -- Any other key clears the confirm delete state, pending key, and message
+    -- Any other key clears the confirm delete state and message
     VtyEvent (V.EvKey _ _) ->
-      when (tuiConfirmDelete st || tuiPendingKey st /= Nothing) $
-        put $ st { tuiConfirmDelete = False, tuiPendingKey = Nothing, tuiMessage = Nothing }
+      when (isJust (tuiConfirmDelete st)) $
+        put $ st { tuiConfirmDelete = Nothing, tuiMessage = Nothing }
 
     _ -> pure ()
 
@@ -562,44 +585,65 @@ handleAddEditEvent ev st = do
           then put $ st { tuiMessage = Just "Title is required" }
           else do
             now <- liftIO getCurrentTime
-            newId <- case absOriginalId abs' of
-              Just origId -> pure origId
+            let mOrig = absOriginal abs'
+            newId <- case mOrig of
+              Just orig -> pure (orig ^. bookId)
               Nothing -> do
                 if T.null (absIsbn abs')
                   then liftIO $ UUID.toText <$> UUID.nextRandom
                   else pure (T.filter (\c -> c /= '-' && c /= ' ') (absIsbn abs'))
 
-            let addedTime = fromMaybe now (absOriginalAdded abs')
-                book = Book
-                  { _bookId = newId
-                  , _isbn = if T.null (absIsbn abs') then Nothing else Just (absIsbn abs')
-                  , _title = absTitle abs'
-                  , _authors = parseCommaSeparated (absAuthors abs')
-                  , _series = Nothing
-                  , _seriesIndex = Nothing
-                  , _publisher = if T.null (absPublisher abs') then Nothing else Just (absPublisher abs')
-                  , _published = parseYear (absPublished abs')
-                  , _tags = parseCommaSeparated (absTags abs')
-                  , _rating = parseRating (absRating abs')
-                  , _comments = if T.null (absComments abs') then Nothing else Just (absComments abs')
-                  , _location = if T.null (absLocation abs') then Nothing else Just (absLocation abs')
-                  , _custom = Map.fromList $ map (\(k, v) -> (k, String v)) (absCustomFields abs')
-                  , _added = addedTime
-                  , _modified = now
-                  }
-            result <- liftIO $ saveBook cfg book
-            case result of
-              Left err ->
-                put $ st { tuiMessage = Just $ "Error: " <> T.pack (show err) }
-              Right () -> do
-                -- Reload books
-                booksResult <- liftIO $ loadBooks cfg
-                let newBooks = either (const []) (sortBy (comparing (^. title))) booksResult
-                put $ st { tuiAppState = appSt & books .~ newBooks
-                                               & currentView .~ ViewList
-                         , tuiAddBookState = Nothing
-                         , tuiMessage = Just $ "Saved: " <> absTitle abs'
-                         }
+            -- Adding (not editing) must never silently overwrite or
+            -- duplicate an existing book that shares the same ID/ISBN
+            let normIsbn = T.filter (\c -> c /= '-' && c /= ' ')
+                newIsbn = if T.null (absIsbn abs')
+                            then Nothing
+                            else Just (normIsbn (absIsbn abs'))
+                sameBook b =
+                  b ^. bookId == newId
+                    || (case (newIsbn, b ^. isbn) of
+                          (Just ni, Just bi) -> normIsbn bi == ni
+                          _ -> False)
+                clashes = mOrig == Nothing && any sameBook (appSt ^. books)
+            if clashes
+              then put $ st { tuiMessage = Just "A book with this ISBN already exists -- edit it instead" }
+              else do
+                let -- Preserve the original JSON value of a custom field
+                    -- whose rendered text was not changed in the form
+                    origCustom = maybe Map.empty (^. custom) mOrig
+                    keepValue (k, v) = case Map.lookup k origCustom of
+                      Just old | valueToText old == v -> (k, old)
+                      _ -> (k, String v)
+                    book = Book
+                      { _bookId = newId
+                      , _isbn = if T.null (absIsbn abs') then Nothing else Just (absIsbn abs')
+                      , _title = absTitle abs'
+                      , _authors = parseCommaSeparated (absAuthors abs')
+                      -- The form has no series fields; keep original values
+                      , _series = mOrig >>= (^. series)
+                      , _seriesIndex = mOrig >>= (^. seriesIndex)
+                      , _publisher = if T.null (absPublisher abs') then Nothing else Just (absPublisher abs')
+                      , _published = parsePublished (absPublished abs')
+                      , _tags = parseCommaSeparated (absTags abs')
+                      , _rating = parseRating (absRating abs')
+                      , _comments = if T.null (absComments abs') then Nothing else Just (absComments abs')
+                      , _location = if T.null (absLocation abs') then Nothing else Just (absLocation abs')
+                      , _custom = Map.fromList $ map keepValue (absCustomFields abs')
+                      , _added = maybe now (^. added) mOrig
+                      , _modified = now
+                      }
+                result <- liftIO $ saveBook cfg book
+                case result of
+                  Left err ->
+                    put $ st { tuiMessage = Just $ "Error: " <> T.pack (show err) }
+                  Right () -> do
+                    -- Reload books
+                    (_, newBooks) <- liftIO $ reloadBooks cfg
+                    put $ st { tuiAppState = appSt & books .~ newBooks
+                                                   & currentView .~ ViewList
+                             , tuiAddBookState = Nothing
+                             , tuiMessage = Just $ "Saved: " <> absTitle abs'
+                             }
 
       VtyEvent (V.EvKey (V.KChar '\t') []) ->
         -- Move to next field (skip if in custom editing mode)
@@ -759,8 +803,7 @@ handleMoveEvent ev st = do
                    put $ st { tuiMessage = Just $ "Error: " <> T.pack (show err) }
                  Right () -> do
                    -- Reload books
-                   booksResult <- liftIO $ loadBooks cfg
-                   let newBooks = either (const []) (sortBy (comparing (^. title))) booksResult
+                   (_, newBooks) <- liftIO $ reloadBooks cfg
                    put $ st { tuiAppState = appSt & books .~ newBooks
                                                   & currentView .~ ViewList
                             , tuiMoveBookState = Nothing
@@ -782,6 +825,13 @@ handleMoveEvent ev st = do
 -- | Find a book by its ID
 findBookById :: BookId -> [Book] -> Maybe Book
 findBookById bid = listToMaybe . filter (\b -> b ^. bookId == bid)
+
+-- | Parse the published field: accepts a full date ("2020-01-31", the
+-- format the edit form displays for existing dates) or a bare year
+parsePublished :: Text -> Maybe Day
+parsePublished t =
+  let s = T.strip t
+  in parseTimeM True defaultTimeLocale "%Y-%m-%d" (T.unpack s) <|> parseYear s
 
 -- | Parse year text to Day (January 1st of that year)
 parseYear :: Text -> Maybe Day
@@ -843,27 +893,23 @@ executeCommand cmd st = do
   let appSt = tuiAppState st
   case cmd of
     CmdFilterTag t ->
-      put $ st { tuiAppState = appSt & activeFilter .~ Just (FilterTag t)
-                                      & currentView .~ ViewList
-                                      & selectedIndex .~ 0
-               , tuiCommandBarState = Nothing
-               , tuiMessage = Just $ "Filter: tag = " <> t
-               }
+      let newAppSt = appSt & activeFilter .~ Just (FilterTag t)
+                           & currentView .~ ViewList
+      in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                  , tuiCommandBarState = Nothing
+                  , tuiMessage = Just $ "Filter: tag = " <> t
+                  }
     CmdFilterAuthor a ->
-      put $ st { tuiAppState = appSt & activeFilter .~ Just (FilterAuthor a)
-                                      & currentView .~ ViewList
-                                      & selectedIndex .~ 0
-               , tuiCommandBarState = Nothing
-               , tuiMessage = Just $ "Filter: author = " <> a
-               }
+      let newAppSt = appSt & activeFilter .~ Just (FilterAuthor a)
+                           & currentView .~ ViewList
+      in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                  , tuiCommandBarState = Nothing
+                  , tuiMessage = Just $ "Filter: author = " <> a
+                  }
     CmdGroup gf ->
       let newAppSt = appSt & groupMode .~ Just gf
                             & currentView .~ ViewList
-                            & selectedIndex .~ 0
-          visibleBks = getVisibleBooks newAppSt
-          items = buildGroupedList gf (newAppSt ^. sortField) (newAppSt ^. sortOrder) visibleBks
-          firstIdx = firstSelectableIndex items
-      in put $ st { tuiAppState = newAppSt & selectedIndex .~ firstIdx
+      in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
                   , tuiCommandBarState = Nothing
                   , tuiMessage = Just $ "Grouped by " <> groupFieldName gf
                   }
@@ -875,12 +921,12 @@ executeCommand cmd st = do
                , tuiMessage = Just "Grouping cleared"
                }
     CmdSort sf ->
-      put $ st { tuiAppState = appSt & sortField .~ sf
-                                      & currentView .~ ViewList
-                                      & selectedIndex .~ 0
-               , tuiCommandBarState = Nothing
-               , tuiMessage = Just $ "Sorted by " <> sortFieldName sf
-               }
+      let newAppSt = appSt & sortField .~ sf
+                           & currentView .~ ViewList
+      in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                  , tuiCommandBarState = Nothing
+                  , tuiMessage = Just $ "Sorted by " <> sortFieldName sf
+                  }
     CmdClear ->
       put $ st { tuiAppState = appSt & activeFilter .~ Nothing
                                       & groupMode .~ Nothing
@@ -922,7 +968,7 @@ navigateDown :: TUIState -> AppState -> [Book] -> EventM Name TUIState ()
 navigateDown st appSt visibleBks =
   case appSt ^. groupMode of
     Nothing ->
-      put $ st { tuiAppState = appSt & selectedIndex %~ min (length visibleBks - 1) . (+ 1) }
+      put $ st { tuiAppState = appSt & selectedIndex %~ max 0 . min (length visibleBks - 1) . (+ 1) }
     Just gf ->
       let items = buildGroupedList gf (appSt ^. sortField) (appSt ^. sortOrder) visibleBks
           newIdx = nextSelectableIndex items (appSt ^. selectedIndex)

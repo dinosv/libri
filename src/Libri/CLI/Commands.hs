@@ -10,6 +10,7 @@ module Libri.CLI.Commands
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, catch, try)
 import Control.Monad (forM, forM_, when)
 import Data.Char (toLower)
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -252,6 +253,19 @@ runCommand cfg cmd = case cmd of
 
   CmdEnrich -> runEnrich cfg
 
+-- | Load books, printing a warning for any unreadable files
+loadBooksReporting :: Config -> IO [Book]
+loadBooksReporting cfg = do
+  (errs, bks) <- loadBooksWithErrors cfg
+  forM_ errs $ \(path, err) ->
+    hPutStrLn stderr $ "Warning: skipping unreadable book file " <> path <> ": " <> show err
+  pure bks
+
+-- | Read a line from stdin, returning Nothing on EOF or closed stdin
+-- so non-interactive use fails gracefully instead of crashing
+readLineSafe :: IO (Maybe String)
+readLineSafe = (Just <$> getLine) `catch` \(_ :: IOException) -> pure Nothing
+
 -- | Add a new book
 runAdd :: Config -> AddOpts -> IO ()
 runAdd cfg opts = do
@@ -279,6 +293,21 @@ runAdd cfg opts = do
     hPutStrLn stderr "Error: Book must have a title"
     exitFailure
 
+  -- Refuse to silently overwrite an existing book with the same ID/ISBN
+  existing <- loadBooksReporting cfg
+  let idx = buildIndex existing
+      dup = lookupById (book' ^. bookId) idx
+        <|> (case book' ^. isbn of
+               Just i -> lookupByISBN i idx
+               Nothing -> Nothing)
+  case dup of
+    Just old -> do
+      hPutStrLn stderr $ "Error: This book already exists: '"
+        <> T.unpack (old ^. title) <> "' (ID: " <> T.unpack (old ^. bookId) <> ")"
+      hPutStrLn stderr "Edit the existing entry instead of re-adding it."
+      exitFailure
+    Nothing -> pure ()
+
   -- Save
   result <- saveBook cfg book'
   case result of
@@ -292,51 +321,41 @@ runAdd cfg opts = do
 -- | Search for books
 runSearch :: Config -> Text -> IO ()
 runSearch cfg query = do
-  booksResult <- loadBooks cfg
-  case booksResult of
-    Left err -> do
-      hPutStrLn stderr $ "Error loading books: " <> show err
-      exitFailure
-    Right bks -> do
-      let threshold = _fuzzyThreshold cfg
-          results = searchBooks threshold query bks
-      if null results
-        then TIO.putStrLn "No books found."
-        else do
-          TIO.putStrLn $ "Found " <> T.pack (show (length results)) <> " book(s):\n"
-          forM_ results $ \book -> do
-            TIO.putStrLn $ "  " <> (book ^. title)
-            TIO.putStrLn $ "    by " <> T.intercalate ", " (book ^. authors)
-            case book ^. location of
-              Just loc -> TIO.putStrLn $ "    Location: " <> loc
-              Nothing -> pure ()
-            TIO.putStrLn ""
+  bks <- loadBooksReporting cfg
+  let threshold = _fuzzyThreshold cfg
+      results = searchBooks threshold query bks
+  if null results
+    then TIO.putStrLn "No books found."
+    else do
+      TIO.putStrLn $ "Found " <> T.pack (show (length results)) <> " book(s):\n"
+      forM_ results $ \book -> do
+        TIO.putStrLn $ "  " <> (book ^. title)
+        TIO.putStrLn $ "    by " <> T.intercalate ", " (book ^. authors)
+        case book ^. location of
+          Just loc -> TIO.putStrLn $ "    Location: " <> loc
+          Nothing -> pure ()
+        TIO.putStrLn ""
 
 -- | Move a book to a new location
 runMove :: Config -> MoveOpts -> IO ()
 runMove cfg opts = do
-  booksResult <- loadBooks cfg
-  case booksResult of
-    Left err -> do
-      hPutStrLn stderr $ "Error loading books: " <> show err
+  bks <- loadBooksReporting cfg
+  let idx = buildIndex bks
+      mBook = lookupById (moveBookId opts) idx
+          <|> lookupByISBN (moveBookId opts) idx
+  case mBook of
+    Nothing -> do
+      hPutStrLn stderr $ "Book not found: " <> T.unpack (moveBookId opts)
       exitFailure
-    Right bks -> do
-      let idx = buildIndex bks
-          mBook = lookupById (moveBookId opts) idx
-              <|> lookupByISBN (moveBookId opts) idx
-      case mBook of
-        Nothing -> do
-          hPutStrLn stderr $ "Book not found: " <> T.unpack (moveBookId opts)
+    Just book -> do
+      let book' = book & location .~ Just (moveTo opts)
+      result <- saveBook cfg book'
+      case result of
+        Left err -> do
+          hPutStrLn stderr $ "Error saving book: " <> show err
           exitFailure
-        Just book -> do
-          let book' = book & location .~ Just (moveTo opts)
-          result <- saveBook cfg book'
-          case result of
-            Left err -> do
-              hPutStrLn stderr $ "Error saving book: " <> show err
-              exitFailure
-            Right () -> do
-              TIO.putStrLn $ "Moved '" <> (book ^. title) <> "' to " <> moveTo opts
+        Right () -> do
+          TIO.putStrLn $ "Moved '" <> (book ^. title) <> "' to " <> moveTo opts
 
 -- | List all locations
 runLocations :: Config -> IO ()
@@ -382,12 +401,8 @@ runImportCalibre cfg path = do
 -- | List all books
 runList :: Config -> IO ()
 runList cfg = do
-  result <- loadBooks cfg
-  case result of
-    Left err -> do
-      hPutStrLn stderr $ "Error loading books: " <> show err
-      exitFailure
-    Right bks -> do
+  bks <- loadBooksReporting cfg
+  do
       TIO.putStrLn $ "Total: " <> T.pack (show (length bks)) <> " book(s)\n"
       forM_ bks $ \book -> do
         TIO.putStrLn $ (book ^. title)
@@ -402,20 +417,15 @@ runList cfg = do
 -- | Show book details
 runShow :: Config -> Text -> IO ()
 runShow cfg bookIdText = do
-  result <- loadBooks cfg
-  case result of
-    Left err -> do
-      hPutStrLn stderr $ "Error loading books: " <> show err
+  bks <- loadBooksReporting cfg
+  let idx = buildIndex bks
+      mBook = lookupById bookIdText idx
+          <|> lookupByISBN bookIdText idx
+  case mBook of
+    Nothing -> do
+      hPutStrLn stderr $ "Book not found: " <> T.unpack bookIdText
       exitFailure
-    Right bks -> do
-      let idx = buildIndex bks
-          mBook = lookupById bookIdText idx
-              <|> lookupByISBN bookIdText idx
-      case mBook of
-        Nothing -> do
-          hPutStrLn stderr $ "Book not found: " <> T.unpack bookIdText
-          exitFailure
-        Just book -> printBookDetails book
+    Just book -> printBookDetails book
 
 -- | Print detailed book information
 printBookDetails :: Book -> IO ()
@@ -454,23 +464,23 @@ printBookDetails book = do
       TIO.putStrLn $ "  " <> T.take 200 c
     Nothing -> pure ()
 
--- | Delete a book
+-- | Delete a book (asks for confirmation)
 runDelete :: Config -> Text -> IO ()
 runDelete cfg bookIdText = do
-  result <- loadBooks cfg
-  case result of
-    Left err -> do
-      hPutStrLn stderr $ "Error loading books: " <> show err
+  bks <- loadBooksReporting cfg
+  let idx = buildIndex bks
+      mBook = lookupById bookIdText idx
+          <|> lookupByISBN bookIdText idx
+  case mBook of
+    Nothing -> do
+      hPutStrLn stderr $ "Book not found: " <> T.unpack bookIdText
       exitFailure
-    Right bks -> do
-      let idx = buildIndex bks
-          mBook = lookupById bookIdText idx
-              <|> lookupByISBN bookIdText idx
-      case mBook of
-        Nothing -> do
-          hPutStrLn stderr $ "Book not found: " <> T.unpack bookIdText
-          exitFailure
-        Just book -> do
+    Just book -> do
+      TIO.putStr $ "Delete '" <> (book ^. title) <> "' (ID: " <> (book ^. bookId) <> ")? [y/N] "
+      hFlush stdout
+      answer <- readLineSafe
+      case map toLower <$> answer of
+        Just a | a `elem` ["y", "yes"] -> do
           deleteResult <- deleteBook cfg book
           case deleteResult of
             Left err -> do
@@ -478,13 +488,19 @@ runDelete cfg bookIdText = do
               exitFailure
             Right () ->
               TIO.putStrLn $ "Deleted: " <> (book ^. title)
+        _ -> TIO.putStrLn "Cancelled."
 
 -- | Import books from a text file containing ISBNs
 runImportIsbnTxt :: Config -> FilePath -> IO ()
 runImportIsbnTxt cfg path = do
   -- Phase 1: Read and parse file
   TIO.putStrLn $ "Reading ISBNs from: " <> T.pack path
-  content <- TIO.readFile path
+  contentResult <- try (TIO.readFile path) :: IO (Either IOException Text)
+  content <- case contentResult of
+    Left e -> do
+      hPutStrLn stderr $ "Error reading " <> path <> ": " <> show e
+      exitFailure
+    Right c -> pure c
   let isbns = parseIsbnFile content
 
   when (null isbns) $ do
@@ -494,7 +510,7 @@ runImportIsbnTxt cfg path = do
   TIO.putStrLn $ "Found " <> tshow (length isbns) <> " ISBNs to process.\n"
 
   -- Load existing books for duplicate detection
-  existingBooks <- loadBooks cfg >>= either (const $ pure []) pure
+  existingBooks <- loadBooksReporting cfg
   let idx = buildIndex existingBooks
 
   -- Phase 2: Fetch with progress (reuse a single HTTP manager)
@@ -526,14 +542,19 @@ runImportIsbnTxt cfg path = do
     Nothing -> TIO.putStrLn "Import cancelled."
     Just booksToSave -> do
       TIO.putStrLn $ "\nImporting " <> tshow (length booksToSave) <> " books...\n"
-      forM_ booksToSave $ \book -> do
+      saveResults <- forM booksToSave $ \book -> do
         saveResult <- saveBook cfg book
         case saveResult of
           Left err ->
             TIO.putStrLn $ "  ✗ " <> (book ^. title) <> " (Error: " <> T.pack (show err) <> ")"
           Right () ->
             TIO.putStrLn $ "  ✓ " <> (book ^. title)
-      TIO.putStrLn $ "\nImport complete! " <> tshow (length booksToSave) <> " books added to collection."
+        pure saveResult
+      let saved = length [() | Right () <- saveResults]
+          failedSaves = length booksToSave - saved
+      TIO.putStrLn $ "\nImport complete! " <> tshow saved <> " books added to collection."
+      when (failedSaves > 0) $
+        TIO.putStrLn $ "  " <> tshow failedSaves <> " books failed to save"
 
 -- | Helper to show Text values
 tshow :: Show a => a -> Text
@@ -632,14 +653,17 @@ promptForSelection BatchResults{..}
       TIO.putStr "Choice [a/d/s/n]: "
       hFlush stdout
 
-      choice <- getLine
-      case map toLower choice of
-        "a" -> pure $ Just brNew
-        "d" -> pure $ Just (brNew ++ map fst brDuplicates)
-        "s" -> selectSpecificBooks brNew brDuplicates
-        "n" -> pure Nothing
-        "" -> pure $ Just brNew  -- Default to all new
-        _ -> do
+      mChoice <- readLineSafe
+      case map toLower <$> mChoice of
+        Nothing -> do
+          TIO.putStrLn "No input available. Cancelling."
+          pure Nothing
+        Just "a" -> pure $ Just brNew
+        Just "d" -> pure $ Just (brNew ++ map fst brDuplicates)
+        Just "s" -> selectSpecificBooks brNew brDuplicates
+        Just "n" -> pure Nothing
+        Just "" -> pure $ Just brNew  -- Default to all new
+        Just _ -> do
           TIO.putStrLn "Invalid choice. Defaulting to import all new books."
           pure $ Just brNew
   where
@@ -663,12 +687,13 @@ selectSpecificBooks newBooks duplicates = do
   TIO.putStr "> "
   hFlush stdout
 
-  input <- getLine
-  case map toLower input of
-    "all" -> pure $ Just allBooks'
-    "none" -> pure Nothing
-    "" -> pure Nothing
-    _ -> do
+  mInput <- readLineSafe
+  case map toLower <$> mInput of
+    Nothing -> pure Nothing
+    Just "all" -> pure $ Just allBooks'
+    Just "none" -> pure Nothing
+    Just "" -> pure Nothing
+    Just input -> do
       let nums = mapMaybe (readMaybe :: String -> Maybe Int) $ words input
           selected = [book | (n, book) <- numbered, n `elem` nums]
       if null selected
