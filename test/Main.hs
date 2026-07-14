@@ -10,6 +10,7 @@ import qualified NormalizeSpec
 import qualified CommandBarSpec
 import qualified GroupedListSpec
 import qualified EnrichSpec
+import qualified TagSidebarSpec
 
 main :: IO ()
 main = hspec $ do
@@ -22,3 +23,4 @@ main = hspec $ do
   CommandBarSpec.spec
   GroupedListSpec.spec
   EnrichSpec.spec
+  TagSidebarSpec.spec

@@ -33,6 +33,7 @@ import Graphics.Vty.Attributes
 data Name
   = BookList
   | BookListViewport
+  | TagSidebarViewport
   | BookDetails
   | SearchField
   | CommandBarField

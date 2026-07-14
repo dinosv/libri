@@ -47,6 +47,7 @@ module Libri.Types
   , SortOrder (..)
     -- * Filter Types
   , Filter (..)
+  , matchesFilter
   , GroupField (..)
     -- * Helper Functions
   , newBook
@@ -73,6 +74,7 @@ import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import GHC.Generics (Generic)
 import Lens.Micro.TH (makeLenses)
+import Libri.Text.Normalize (normalizeText)
 
 -- | Unique identifier for a book (UUID or ISBN)
 type BookId = Text
@@ -179,9 +181,22 @@ data SortOrder = Ascending | Descending
 
 -- | Filter for narrowing the book list
 data Filter
-  = FilterTag Text
-  | FilterAuthor Text
+  = FilterTag Text        -- ^ Tag contains (normalised substring)
+  | FilterAuthor Text     -- ^ Author contains (normalised substring)
+  | FilterTagExact Text   -- ^ Tag equals (normalised, for the sidebar)
+  | FilterUntagged        -- ^ Books with no tags
   deriving (Show, Eq)
+
+-- | Does a book satisfy a filter? Comparisons are case- and
+-- accent-insensitive.
+matchesFilter :: Filter -> Book -> Bool
+matchesFilter (FilterTag t) b =
+  any (\tag -> normalizeText t `T.isInfixOf` normalizeText tag) (_tags b)
+matchesFilter (FilterAuthor a) b =
+  any (\auth -> normalizeText a `T.isInfixOf` normalizeText auth) (_authors b)
+matchesFilter (FilterTagExact t) b =
+  any (\tag -> normalizeText tag == normalizeText t) (_tags b)
+matchesFilter FilterUntagged b = null (_tags b)
 
 -- | Field to group books by
 data GroupField = GroupByTag | GroupByAuthor

@@ -27,12 +27,12 @@ import Lens.Micro ((^.), (&), (.~), (%~))
 import Libri.ISBN.OpenLibrary (fetchByISBN)
 import Libri.Search.Fuzzy (searchBooks)
 import Libri.Storage.Yaml (loadBooksWithErrors, loadLocations, saveBook, deleteBook)
-import Libri.Text.Normalize (normalizeText)
 import Libri.TUI.CommandBar (CommandBarState(..), Command(..), initCommandBarState, parseCommand, completeNext, renderCommandBar)
 import Libri.TUI.Views.AddBook
 import Libri.TUI.Views.BookDetails (renderBookDetails)
 import Libri.TUI.Views.BookList (renderBookList)
 import Libri.TUI.Views.GroupedList (ListItem(..), buildGroupedList, renderGroupedList, nextSelectableIndex, prevSelectableIndex, firstSelectableIndex, lastSelectableIndex)
+import Libri.TUI.Views.TagSidebar (TagEntry, buildTagEntries, entryToFilter, entryLabel, renderTagSidebar)
 import Libri.TUI.Views.MoveBook
 import Libri.TUI.Views.Search (renderSearchBar)
 import Libri.TUI.Widgets.Common
@@ -53,6 +53,8 @@ data TUIState = TUIState
   , tuiMoveBookState :: Maybe MoveBookState -- Move dialog state
   , tuiPendingKey :: Maybe Char     -- For two-key sequences like 'st', 'sa', 'sd'
   , tuiCommandBarState :: Maybe CommandBarState
+  , tuiSidebarFocus :: Bool         -- Tag sidebar has keyboard focus
+  , tuiTagIndex :: Int              -- Selected entry in the tag sidebar
   }
   deriving (Show)
 
@@ -89,6 +91,8 @@ runTUI cfg = do
         , tuiMoveBookState = Nothing
         , tuiPendingKey = Nothing
         , tuiCommandBarState = Nothing
+        , tuiSidebarFocus = False
+        , tuiTagIndex = 0
         }
 
   -- Run the app
@@ -112,21 +116,20 @@ drawUI st =
   let appSt = tuiAppState st
       visibleBooks = getVisibleBooks appSt
       selectedBook = getSelectedBook appSt visibleBooks
-      mCbs = tuiCommandBarState st
   in case appSt ^. currentView of
        ViewAdd ->
          case tuiAddBookState st of
            Just abs' -> [withFormMessage (tuiMessage st) (renderAddBook abs')]
-           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
+           Nothing -> [mainLayout st appSt visibleBooks selectedBook]
        ViewEdit _ ->
          case tuiAddBookState st of
            Just abs' -> [withFormMessage (tuiMessage st) (renderEditBook abs')]
-           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
+           Nothing -> [mainLayout st appSt visibleBooks selectedBook]
        ViewMove _ ->
          case tuiMoveBookState st of
            Just mbs -> [withFormMessage (tuiMessage st) (renderMoveBook mbs)]
-           Nothing -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
-       _ -> [mainLayout appSt visibleBooks selectedBook (tuiMessage st) mCbs]
+           Nothing -> [mainLayout st appSt visibleBooks selectedBook]
+       _ -> [mainLayout st appSt visibleBooks selectedBook]
 
 -- | Show the status message underneath dialog views, which otherwise
 -- give no feedback for validation and save errors
@@ -147,12 +150,7 @@ getVisibleBooks st =
 
 applyFilter :: Maybe Filter -> [Book] -> [Book]
 applyFilter Nothing bks = bks
-applyFilter (Just (FilterTag t)) bks =
-  let normT = normalizeText t
-  in filter (\b -> any (\tag -> normT `T.isInfixOf` normalizeText tag) (b ^. tags)) bks
-applyFilter (Just (FilterAuthor a)) bks =
-  let normA = normalizeText a
-  in filter (\b -> any (\auth -> normA `T.isInfixOf` normalizeText auth) (b ^. authors)) bks
+applyFilter (Just f) bks = filter (matchesFilter f) bks
 
 -- | Apply sort order to books
 applySortOrder :: SortField -> SortOrder -> [Book] -> [Book]
@@ -202,10 +200,14 @@ getSelectedBook st visibleBks =
            (BookRow b : _) -> Just b
            _ -> Nothing
 
--- | Main layout with list and details
-mainLayout :: AppState -> [Book] -> Maybe Book -> Maybe Text -> Maybe CommandBarState -> Widget Name
-mainLayout st visibleBooks selectedBook msg mCbs =
-  vBox
+-- | Main layout with tag sidebar, list and details
+mainLayout :: TUIState -> AppState -> [Book] -> Maybe Book -> Widget Name
+mainLayout tst st visibleBooks selectedBook =
+  let msg = tuiMessage tst
+      mCbs = tuiCommandBarState tst
+      entries = buildTagEntries (st ^. books)
+      tagIdx = clampTagIndex entries (tuiTagIndex tst)
+  in vBox
     [ -- Header
       withAttr headerAttr $ padAll 1 $
         hBox
@@ -215,8 +217,13 @@ mainLayout st visibleBooks selectedBook msg mCbs =
     , hBorder
     , -- Main content
       hBox
-        [ -- Left: Book list
-          hLimitPercent 50 $
+        [ -- Left: Tag sidebar
+          hLimit 22 $
+            titledBorder "Tags" $
+              padAll 1 $ renderTagSidebar entries tagIdx (tuiSidebarFocus tst) (st ^. activeFilter)
+        , vBorder
+        , -- Middle: Book list
+          hLimitPercent 55 $
             titledBorder ("Books" <> searchIndicator st <> filterIndicator st) $
               vBox
                 [ padAll 1 $ renderBookArea st visibleBooks
@@ -234,6 +241,10 @@ mainLayout st visibleBooks selectedBook msg mCbs =
     , -- Command bar (always at the very bottom when active)
       renderCommandLine st mCbs
     ]
+
+-- | Keep the sidebar selection inside the current entry list
+clampTagIndex :: [TagEntry] -> Int -> Int
+clampTagIndex entries idx = max 0 (min (length entries - 1) idx)
 
 -- | Search indicator in title
 searchIndicator :: AppState -> Text
@@ -255,8 +266,10 @@ filterIndicator :: AppState -> Text
 filterIndicator st =
   case st ^. activeFilter of
     Nothing -> ""
-    Just (FilterTag t)    -> " [tag:" <> t <> "]"
-    Just (FilterAuthor a) -> " [author:" <> a <> "]"
+    Just (FilterTag t)      -> " [tag:" <> t <> "]"
+    Just (FilterAuthor a)   -> " [author:" <> a <> "]"
+    Just (FilterTagExact t) -> " [tag:" <> t <> "]"
+    Just FilterUntagged     -> " [untagged]"
 
 renderSearchLine :: AppState -> Widget Name
 renderSearchLine st =
@@ -282,7 +295,8 @@ renderFooter st msg =
           Nothing -> emptyWidget
       , hBox
           [ keyHelp
-              [ ("/", "Search")
+              [ ("Tab", "Tags")
+              , ("/", "Search")
               , (":", "Command")
               , ("a", "Add")
               , ("e", "Edit")
@@ -368,6 +382,38 @@ handleListViewEvent ev st = do
       pageDownIdx i = case mItems of
         Nothing -> max 0 (min (length visibleBooks - 1) (i + 10))
         Just items -> iterate (nextSelectableIndex items) i !! 10
+      -- Tag sidebar state
+      entries = buildTagEntries (appSt ^. books)
+      tagIdx = clampTagIndex entries (tuiTagIndex st)
+      handleSidebarKey key = case key of
+        V.KChar 'q' -> halt
+        V.KEsc ->
+          put $ st { tuiSidebarFocus = False }
+        V.KChar '\t' ->
+          put $ st { tuiSidebarFocus = False }
+        V.KUp ->
+          put $ st { tuiTagIndex = clampTagIndex entries (tagIdx - 1) }
+        V.KChar 'k' ->
+          put $ st { tuiTagIndex = clampTagIndex entries (tagIdx - 1) }
+        V.KDown ->
+          put $ st { tuiTagIndex = clampTagIndex entries (tagIdx + 1) }
+        V.KChar 'j' ->
+          put $ st { tuiTagIndex = clampTagIndex entries (tagIdx + 1) }
+        V.KEnter ->
+          case drop tagIdx entries of
+            (entry : _) ->
+              let newFilter = entryToFilter entry
+                  newAppSt = appSt & activeFilter .~ newFilter
+                  msg = case newFilter of
+                    Nothing -> "Showing all books"
+                    Just _ -> "Filter: " <> entryLabel entry
+              in put $ st { tuiAppState = newAppSt & selectedIndex .~ resetIndex newAppSt
+                          , tuiSidebarFocus = False
+                          , tuiTagIndex = tagIdx
+                          , tuiMessage = Just msg
+                          }
+            [] -> pure ()
+        _ -> pure ()
       -- Complete or cancel a pending 's' sort sequence
       applySort sf =
         let newOrder = if appSt ^. sortField == sf
@@ -382,6 +428,17 @@ handleListViewEvent ev st = do
                     }
 
   case ev of
+    -- Tag sidebar focused: it owns the keys until focus returns
+    VtyEvent (V.EvKey key _) | tuiSidebarFocus st ->
+      handleSidebarKey key
+
+    -- Focus the tag sidebar
+    VtyEvent (V.EvKey (V.KChar '\t') []) ->
+      put $ st { tuiSidebarFocus = True
+               , tuiConfirmDelete = Nothing
+               , tuiMessage = Just "Tags: j/k to move, Enter to filter, Esc to return"
+               }
+
     -- Pending sort sequence: the next key either completes it or cancels it,
     -- so stale pending state can never hijack later 'a'/'d' presses
     VtyEvent (V.EvKey key _) | tuiPendingKey st == Just 's' ->
