@@ -2,6 +2,8 @@ module Libri.CLI.Commands
   ( -- * Command Types
     Command (..)
   , Options (..)
+  , AddOpts (..)
+  , applyAddOpts
     -- * Parsing
   , parseOptions
   , optsParser
@@ -18,7 +20,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Lens.Micro ((&), (.~), (^.))
-import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults, normalizeISBN)
+import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults, normalizeISBN, ImportChoice(..), parseImportChoice)
 import Libri.CLI.Doctor (runDoctor)
 import Libri.CLI.Enrich (runEnrich)
 import Libri.CLI.Migrate (runMigrateIds)
@@ -74,7 +76,7 @@ data MoveOpts = MoveOpts
 
 -- | Full command-line options
 data Options = Options
-  { optConfigPath :: FilePath
+  { optConfigPath :: Maybe FilePath  -- ^ Explicit --config, if given
   , optCommand :: Command
   }
   deriving (Show)
@@ -92,13 +94,12 @@ parseOptions = execParser opts
 -- | Options parser
 optsParser :: Parser Options
 optsParser = Options
-  <$> strOption
+  <$> optional (strOption
       ( long "config"
      <> short 'c'
      <> metavar "PATH"
-     <> value "~/.config/libri/config.yaml"
-     <> help "Path to configuration file"
-      )
+     <> help ("Path to configuration file (default: " <> defaultConfigPath <> ")")
+      ))
   <*> commandParser
 
 -- | Command parser
@@ -317,6 +318,18 @@ loadBooksReporting cfg = do
 readLineSafe :: IO (Maybe String)
 readLineSafe = (Just <$> getLine) `catch` \(_ :: IOException) -> pure Nothing
 
+-- | Apply the command-line options of --add to a looked-up (or blank)
+-- book. The ISBN given is kept even when the lookup failed.
+applyAddOpts :: AddOpts -> Book -> Book
+applyAddOpts opts book = book
+  & maybe id (\t -> title .~ t) (addTitle opts)
+  & (if null (addAuthors opts) then id else authors .~ addAuthors opts)
+  & location .~ addLocation opts
+  & (if null (addTags opts) then id else tags .~ addTags opts)
+  & (case (book ^. isbn, addISBN opts) of
+       (Nothing, Just i) -> isbn .~ Just (normalizeISBN i)
+       _ -> id)
+
 -- | Add a new book
 runAdd :: Config -> AddOpts -> IO ()
 runAdd cfg opts = do
@@ -332,12 +345,7 @@ runAdd cfg opts = do
         Right b -> pure b
     Nothing -> newBook
 
-  -- Apply overrides from CLI options
-  let book' = book
-        & maybe id (\t -> title .~ t) (addTitle opts)
-        & (if null (addAuthors opts) then id else authors .~ addAuthors opts)
-        & location .~ addLocation opts
-        & (if null (addTags opts) then id else tags .~ addTags opts)
+  let book' = applyAddOpts opts book
 
   -- Validate
   when (T.null (book' ^. title)) $ do
@@ -701,23 +709,23 @@ promptForSelection BatchResults{..}
       TIO.putStrLn "  [s] Select specific books to import"
       TIO.putStrLn "  [n] Cancel - don't import anything"
       TIO.putStrLn ""
+      askChoice
+  where
+    askChoice = do
       TIO.putStr "Choice [a/d/s/n]: "
       hFlush stdout
-
       mChoice <- readLineSafe
-      case map toLower <$> mChoice of
+      case parseImportChoice . T.pack <$> mChoice of
         Nothing -> do
           TIO.putStrLn "No input available. Cancelling."
           pure Nothing
-        Just "a" -> pure $ Just brNew
-        Just "d" -> pure $ Just (brNew ++ map fst brDuplicates)
-        Just "s" -> selectSpecificBooks brNew brDuplicates
-        Just "n" -> pure Nothing
-        Just "" -> pure $ Just brNew  -- Default to all new
-        Just _ -> do
-          TIO.putStrLn "Invalid choice. Defaulting to import all new books."
-          pure $ Just brNew
-  where
+        Just (Just ImportNew) -> pure $ Just brNew
+        Just (Just ImportAll) -> pure $ Just (brNew ++ map fst brDuplicates)
+        Just (Just ImportSelect) -> selectSpecificBooks brNew brDuplicates
+        Just (Just ImportCancel) -> pure Nothing
+        Just Nothing -> do
+          TIO.putStrLn "Please answer a, d, s or n."
+          askChoice
     numNew = length brNew
     numDups = length brDuplicates
     totalAvailable = numNew + numDups

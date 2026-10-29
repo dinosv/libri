@@ -5,7 +5,10 @@ module Libri.TUI.Views.AddBook
   , initAddBookState
   , initEditBookState
   , updateCurrentField
-  , parseCommaSeparated
+  , parseList
+  , joinList
+  , parsePublishedField
+  , applyLookup
   , filterRating
   , valueToText
   ) where
@@ -13,23 +16,26 @@ module Libri.TUI.Views.AddBook
 import Brick
 import Brick.Widgets.Border (hBorder)
 import Brick.Widgets.Center
+import Control.Applicative ((<|>))
 import Data.Aeson (Value(..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Time (Day, defaultTimeLocale, fromGregorian, parseTimeM)
 import Lens.Micro ((^.), (&))
 import Libri.TUI.Widgets.Common
 import Libri.Types
+import Text.Read (readMaybe)
 
 -- | State for the add/edit book form
 data AddBookState = AddBookState
   { absIsbn :: Text
   , absTitle :: Text
-  , absAuthors :: Text        -- Comma-separated
+  , absAuthors :: Text        -- Semicolon-separated
   , absPublisher :: Text
-  , absPublished :: Text      -- Year (e.g., "2024")
+  , absPublished :: Text      -- Year or full date
   , absLocation :: Text
-  , absTags :: Text           -- Comma-separated
+  , absTags :: Text           -- Semicolon-separated
   , absRating :: Text         -- "1"-"5" or ""
   , absComments :: Text       -- Full text (display truncated)
   , absCustomFields :: [(Text, Text)]  -- List of (key, value)
@@ -67,11 +73,11 @@ initEditBookState :: Book -> AddBookState
 initEditBookState book = AddBookState
   { absIsbn = maybe "" id (book ^. isbn)
   , absTitle = book ^. title
-  , absAuthors = T.intercalate ", " (book ^. authors)
+  , absAuthors = joinList (book ^. authors)
   , absPublisher = maybe "" id (book ^. publisher)
   , absPublished = maybe "" (T.pack . show) (book ^. published)
   , absLocation = maybe "" id (book ^. location)
-  , absTags = T.intercalate ", " (book ^. tags)
+  , absTags = joinList (book ^. tags)
   , absRating = maybe "" (T.pack . show) (book ^. rating)
   , absComments = maybe "" id (book ^. comments)
   , absCustomFields = Map.toList $ Map.map valueToText (book ^. custom)
@@ -103,17 +109,17 @@ renderAddBook st =
             , renderField 1 "Title" (absTitle st) (absCurrentField st)
             , txt " "
             , renderField 2 "Authors" (absAuthors st) (absCurrentField st)
-            , txt "(comma-separated)" & withAttr helpAttr
+            , txt "(separated by ;)" & withAttr helpAttr
             , txt " "
             , renderField 3 "Publisher" (absPublisher st) (absCurrentField st)
             , txt " "
             , renderField 4 "Published" (absPublished st) (absCurrentField st)
-            , txt "(year, e.g. 2024)" & withAttr helpAttr
+            , txt "(year or YYYY-MM-DD)" & withAttr helpAttr
             , txt " "
             , renderField 5 "Location" (absLocation st) (absCurrentField st)
             , txt " "
             , renderField 6 "Tags" (absTags st) (absCurrentField st)
-            , txt "(comma-separated)" & withAttr helpAttr
+            , txt "(separated by ;)" & withAttr helpAttr
             , txt " "
             , renderRatingField 7 (absRating st) (absCurrentField st)
             , txt " "
@@ -144,17 +150,17 @@ renderEditBook st =
             , renderField 1 "Title" (absTitle st) (absCurrentField st)
             , txt " "
             , renderField 2 "Authors" (absAuthors st) (absCurrentField st)
-            , txt "(comma-separated)" & withAttr helpAttr
+            , txt "(separated by ;)" & withAttr helpAttr
             , txt " "
             , renderField 3 "Publisher" (absPublisher st) (absCurrentField st)
             , txt " "
             , renderField 4 "Published" (absPublished st) (absCurrentField st)
-            , txt "(year, e.g. 2024)" & withAttr helpAttr
+            , txt "(year or YYYY-MM-DD)" & withAttr helpAttr
             , txt " "
             , renderField 5 "Location" (absLocation st) (absCurrentField st)
             , txt " "
             , renderField 6 "Tags" (absTags st) (absCurrentField st)
-            , txt "(comma-separated)" & withAttr helpAttr
+            , txt "(separated by ;)" & withAttr helpAttr
             , txt " "
             , renderRatingField 7 (absRating st) (absCurrentField st)
             , txt " "
@@ -283,7 +289,49 @@ updateCurrentField f st = case absCurrentField st of
   9 -> st  -- Custom fields have special handling
   _ -> st
 
--- | Parse comma-separated values
-parseCommaSeparated :: Text -> [Text]
-parseCommaSeparated =
-  filter (not . T.null) . map T.strip . T.splitOn ","
+-- | Separator for list fields (authors, tags) in the form. Not a
+-- comma: Calibre tags and authors often contain commas themselves
+-- ("Goya, Francisco, 1746-1828")
+listSeparator :: Text
+listSeparator = ";"
+
+-- | Render a list field for editing
+joinList :: [Text] -> Text
+joinList = T.intercalate (listSeparator <> " ")
+
+-- | Parse a list field back into its items
+parseList :: Text -> [Text]
+parseList =
+  filter (not . T.null) . map T.strip . T.splitOn listSeparator
+
+-- | Parse the published field: empty means no date; otherwise a full
+-- date ("2020-01-31", the format the edit form displays) or a bare
+-- year. Anything else is an error rather than a silently lost date.
+parsePublishedField :: Text -> Either Text (Maybe Day)
+parsePublishedField t
+  | T.null s = Right Nothing
+  | otherwise =
+      maybe (Left $ "Published: expected a year or YYYY-MM-DD, got '" <> s <> "'")
+            (Right . Just)
+            (parseTimeM True defaultTimeLocale "%Y-%m-%d" (T.unpack s) <|> parseYear)
+  where
+    s = T.strip t
+    parseYear = case readMaybe (T.unpack s) of
+      Just year | year >= 1000 && year <= 9999 -> Just (fromGregorian year 1 1)
+      _ -> Nothing
+
+-- | Fill the form from an ISBN lookup. Only empty fields are filled,
+-- so a lookup never overwrites what the user has already entered.
+applyLookup :: Book -> AddBookState -> AddBookState
+applyLookup book st = st
+  { absTitle = fillEmpty (absTitle st) (book ^. title)
+  , absAuthors = fillEmpty (absAuthors st) (joinList (book ^. authors))
+  , absPublisher = fillEmpty (absPublisher st) (maybe "" id (book ^. publisher))
+  , absPublished = fillEmpty (absPublished st) (maybe "" (T.pack . show) (book ^. published))
+  , absLocation = fillEmpty (absLocation st) (maybe "" id (book ^. location))
+  , absTags = fillEmpty (absTags st) (joinList (book ^. tags))
+  }
+  where
+    fillEmpty current fetched
+      | T.null (T.strip current) = fetched
+      | otherwise = current

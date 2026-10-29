@@ -5,7 +5,6 @@ module Libri.TUI.App
 
 import Brick
 import Brick.Widgets.Border
-import Control.Applicative ((<|>))
 import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Value(..))
@@ -17,8 +16,7 @@ import Data.Ord (comparing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time (Day, getCurrentTime, fromGregorian, parseTimeM, defaultTimeLocale)
-import Text.Read (readMaybe)
+import Data.Time (getCurrentTime)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import qualified Graphics.Vty as V
@@ -638,9 +636,10 @@ handleAddEditEvent ev st = do
                  }
 
       VtyEvent (V.EvKey V.KEnter []) ->
-        if T.null (absTitle abs')
-          then put $ st { tuiMessage = Just "Title is required" }
-          else do
+        case (T.null (absTitle abs'), parsePublishedField (absPublished abs')) of
+          (True, _) -> put $ st { tuiMessage = Just "Title is required" }
+          (_, Left err) -> put $ st { tuiMessage = Just err }
+          (_, Right publishedDay) -> do
             now <- liftIO getCurrentTime
             let mOrig = absOriginal abs'
             newId <- case mOrig of
@@ -672,13 +671,13 @@ handleAddEditEvent ev st = do
                       { _bookId = newId
                       , _isbn = if T.null (absIsbn abs') then Nothing else Just (absIsbn abs')
                       , _title = absTitle abs'
-                      , _authors = parseCommaSeparated (absAuthors abs')
+                      , _authors = parseList (absAuthors abs')
                       -- The form has no series fields; keep original values
                       , _series = mOrig >>= (^. series)
                       , _seriesIndex = mOrig >>= (^. seriesIndex)
                       , _publisher = if T.null (absPublisher abs') then Nothing else Just (absPublisher abs')
-                      , _published = parsePublished (absPublished abs')
-                      , _tags = parseCommaSeparated (absTags abs')
+                      , _published = publishedDay
+                      , _tags = parseList (absTags abs')
                       , _rating = parseRating (absRating abs')
                       , _comments = if T.null (absComments abs') then Nothing else Just (absComments abs')
                       , _location = if T.null (absLocation abs') then Nothing else Just (absLocation abs')
@@ -797,15 +796,8 @@ handleAddEditEvent ev st = do
               Left err ->
                 put $ st { tuiMessage = Just $ "Lookup failed: " <> T.pack (show err) }
               Right book -> do
-                -- Update form fields with fetched data
-                let newAbs = abs'
-                      { absTitle = book ^. title
-                      , absAuthors = T.intercalate ", " (book ^. authors)
-                      , absPublisher = maybe (absPublisher abs') id (book ^. publisher)
-                      , absPublished = maybe (absPublished abs') (T.pack . show) (book ^. published)
-                      , absLocation = maybe (absLocation abs') id (book ^. location)
-                      , absTags = T.intercalate ", " (book ^. tags)
-                      }
+                -- Fill only the fields the user has left empty
+                let newAbs = applyLookup book abs'
                 put $ st { tuiAddBookState = Just newAbs
                          , tuiMessage = Just $ "Found: " <> (book ^. title)
                          }
@@ -879,20 +871,6 @@ handleMoveEvent ev st = do
 -- | Find a book by its ID
 findBookById :: BookId -> [Book] -> Maybe Book
 findBookById bid = listToMaybe . filter (\b -> b ^. bookId == bid)
-
--- | Parse the published field: accepts a full date ("2020-01-31", the
--- format the edit form displays for existing dates) or a bare year
-parsePublished :: Text -> Maybe Day
-parsePublished t =
-  let s = T.strip t
-  in parseTimeM True defaultTimeLocale "%Y-%m-%d" (T.unpack s) <|> parseYear s
-
--- | Parse year text to Day (January 1st of that year)
-parseYear :: Text -> Maybe Day
-parseYear t =
-  case readMaybe (T.unpack t) of
-    Just year | year >= 1000 && year <= 9999 -> Just (fromGregorian year 1 1)
-    _ -> Nothing
 
 -- | Parse rating text to Maybe Int (1-5)
 parseRating :: Text -> Maybe Int

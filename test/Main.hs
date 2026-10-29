@@ -14,6 +14,8 @@ import qualified TagSidebarSpec
 import qualified TagsSpec
 import qualified DoctorSpec
 import qualified MigrateSpec
+import qualified AddBookSpec
+import qualified CommandsSpec
 
 main :: IO ()
 main = hspec $ do
@@ -30,3 +32,5 @@ main = hspec $ do
   TagsSpec.spec
   DoctorSpec.spec
   MigrateSpec.spec
+  AddBookSpec.spec
+  CommandsSpec.spec

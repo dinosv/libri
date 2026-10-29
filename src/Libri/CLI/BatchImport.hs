@@ -6,6 +6,8 @@ module Libri.CLI.BatchImport
   , BatchResults(..)
   , categorizeResults
   , normalizeISBN
+  , ImportChoice(..)
+  , parseImportChoice
   ) where
 
 import Data.Text (Text)
@@ -52,3 +54,21 @@ categorizeResults results = BatchResults
 -- | Normalize ISBN by removing dashes and spaces
 normalizeISBN :: Text -> Text
 normalizeISBN = T.filter (\c -> c /= '-' && c /= ' ')
+
+-- | Answer to the batch-import prompt
+data ImportChoice
+  = ImportNew      -- ^ [a] all new books
+  | ImportAll      -- ^ [d] new books and duplicates
+  | ImportSelect   -- ^ [s] choose books one by one
+  | ImportCancel   -- ^ [n] import nothing
+  deriving (Show, Eq)
+
+-- | Parse an answer to the batch-import prompt. Anything other than a
+-- listed letter is Nothing, so a stray key never imports by default.
+parseImportChoice :: Text -> Maybe ImportChoice
+parseImportChoice t = case T.toLower (T.strip t) of
+  "a" -> Just ImportNew
+  "d" -> Just ImportAll
+  "s" -> Just ImportSelect
+  "n" -> Just ImportCancel
+  _ -> Nothing

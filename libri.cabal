@@ -88,6 +88,7 @@ executable libri
                     , libri
                     , text
                     , optparse-applicative
+                    , directory >=1.3 && <2
     hs-source-dirs:   app
     default-language: GHC2021
     default-extensions: OverloadedStrings
@@ -110,6 +111,8 @@ test-suite libri-test
                     , TagsSpec
                     , DoctorSpec
                     , MigrateSpec
+                    , AddBookSpec
+                    , CommandsSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3

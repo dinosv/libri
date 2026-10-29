@@ -4,8 +4,8 @@ import qualified Data.Map.Strict as Map
 import Data.Aeson (Value(..))
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
-import Libri.Storage.Yaml (mergeBooks, saveBook, deleteBook, loadBook, loadBooksWithErrors)
-import Libri.Types (Book(..), Config(..), bookFilename, legacyBookFilename, defaultConfig)
+import Libri.Storage.Yaml (mergeBooks, saveBook, deleteBook, loadBook, loadBooksWithErrors, loadConfig, initDataDir)
+import Libri.Types (Book(..), Config(..), LibriError(..), bookFilename, legacyBookFilename, defaultConfig)
 import System.Directory (listDirectory, renameFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -13,6 +13,25 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "YAML Storage" $ do
+
+  describe "loadConfig" $ do
+    it "fails when a required config file is missing" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let path = dir </> "typo.yaml"
+        result <- loadConfig True path
+        result `shouldBe` Left (FileNotFound path)
+
+    it "falls back to defaults when an optional config file is missing" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        result <- loadConfig False (dir </> "config.yaml")
+        result `shouldBe` Right defaultConfig
+
+  describe "initDataDir" $ do
+    it "reports when it creates a new library, and not afterwards" $
+      withSystemTempDirectory "libri-test" $ \dir -> do
+        let cfg = defaultConfig { _dataDir = dir </> "data" }
+        initDataDir cfg `shouldReturn` True
+        initDataDir cfg `shouldReturn` False
 
   describe "mergeBooks" $ do
     let testTime1 = UTCTime (fromGregorian 2025 1 1) 0

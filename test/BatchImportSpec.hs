@@ -3,12 +3,24 @@ module BatchImportSpec (spec) where
 import qualified Data.Map.Strict as Map
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
-import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults)
+import Libri.CLI.BatchImport (parseIsbnFile, FetchResult(..), BatchResults(..), categorizeResults, ImportChoice(..), parseImportChoice)
 import Libri.Types (Book(..))
 import Test.Hspec
 
 spec :: Spec
 spec = describe "Batch ISBN Import" $ do
+
+  describe "parseImportChoice" $ do
+    it "accepts the listed choices, ignoring case and spaces" $ do
+      parseImportChoice "a" `shouldBe` Just ImportNew
+      parseImportChoice " D " `shouldBe` Just ImportAll
+      parseImportChoice "s" `shouldBe` Just ImportSelect
+      parseImportChoice "n" `shouldBe` Just ImportCancel
+
+    it "does not treat an empty or unknown answer as import" $ do
+      parseImportChoice "" `shouldBe` Nothing
+      parseImportChoice "no" `shouldBe` Nothing
+      parseImportChoice "q" `shouldBe` Nothing
 
   describe "parseIsbnFile" $ do
     it "parses one ISBN per line" $ do

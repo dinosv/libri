@@ -4,6 +4,7 @@ module Libri.Storage.Yaml
   , loadBooksWithErrors
   , loadBook
   , loadConfig
+  , defaultConfigPath
   , loadLocations
     -- * Saving
   , saveBook
@@ -58,9 +59,11 @@ getDataDir cfg = do
   createDirectoryIfMissing True expanded
   pure expanded
 
--- | Initialize data directory structure
-initDataDir :: Config -> IO ()
+-- | Initialize data directory structure. Returns True when the
+-- library did not exist and a new, empty one was created.
+initDataDir :: Config -> IO Bool
 initDataDir cfg = do
+  existed <- expandPath (_dataDir cfg) >>= \d -> doesDirectoryExist (d </> "books")
   dir <- getDataDir cfg
   createDirectoryIfMissing True (dir </> "books")
   -- Create default locations file if it doesn't exist
@@ -68,6 +71,7 @@ initDataDir cfg = do
   exists <- doesFileExist locFile
   when (not exists) $ do
     void $ saveLocations cfg defaultLocations
+  pure (not existed)
   where
     defaultLocations =
       [ "Shelf A"
@@ -197,14 +201,20 @@ deleteBook cfg book = do
         Left (e :: IOError) -> pure $ Left $ ParseError firstPath (show e)
         Right () -> pure $ Right ()
 
--- | Load configuration from YAML file
-loadConfig :: FilePath -> IO (Either LibriError Config)
-loadConfig path = do
+-- | Default location of the configuration file
+defaultConfigPath :: FilePath
+defaultConfigPath = "~/.config/libri/config.yaml"
+
+-- | Load configuration from a YAML file. A missing file falls back to
+-- the defaults unless it is required (given explicitly by the user).
+loadConfig :: Bool -> FilePath -> IO (Either LibriError Config)
+loadConfig required path = do
   expanded <- expandPath path
   exists <- doesFileExist expanded
-  if not exists
-    then pure $ Right defaultConfig
-    else do
+  case (exists, required) of
+    (False, True) -> pure $ Left $ FileNotFound expanded
+    (False, False) -> pure $ Right defaultConfig
+    (True, _) -> do
       result <- decodeFileEither expanded
       case result of
         Left err -> pure $ Left $ ParseError expanded (show err)

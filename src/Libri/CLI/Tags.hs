@@ -1,11 +1,12 @@
 module Libri.CLI.Tags
   ( renameTag
   , deleteTag
+  , validTagName
   , runTagRename
   , runTagDelete
   ) where
 
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, unless)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -33,6 +34,10 @@ deleteTag :: Text -> [Text] -> Maybe [Text]
 deleteTag tag tagList =
   let remaining = filter (not . (`sameTag` tag)) tagList
   in if remaining == tagList then Nothing else Just remaining
+
+-- | A tag name must contain something other than whitespace
+validTagName :: Text -> Bool
+validTagName = not . T.null . T.strip
 
 sameTag :: Text -> Text -> Bool
 sameTag a b = normalizeText a == normalizeText b
@@ -68,6 +73,9 @@ applyTagChange cfg change = do
 
 runTagRename :: Config -> Text -> Text -> IO ()
 runTagRename cfg old new = do
+  unless (validTagName new) $ do
+    hPutStrLn stderr "Error: the new tag name must not be empty"
+    exitFailure
   changed <- applyTagChange cfg (renameTag old new . (^. tags))
   if changed == 0
     then TIO.putStrLn $ "No books carry the tag '" <> old <> "'."

@@ -1,10 +1,18 @@
 module TagsSpec (spec) where
 
-import Libri.CLI.Tags (renameTag, deleteTag)
+import Libri.CLI.Tags (renameTag, deleteTag, validTagName)
 import Test.Hspec
 
 spec :: Spec
 spec = describe "Tags" $ do
+
+  describe "validTagName" $ do
+    it "rejects an empty or blank tag name" $ do
+      validTagName "" `shouldBe` False
+      validTagName "   " `shouldBe` False
+
+    it "accepts a real tag name" $
+      validTagName "Public Health" `shouldBe` True
 
   describe "renameTag" $ do
     it "renames a matching tag verbatim" $
