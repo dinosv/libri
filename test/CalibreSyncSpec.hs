@@ -5,7 +5,11 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
+import qualified Data.Text.IO as TIO
 import Libri.Storage.CalibreSync
+import Libri.Types (LibriError(..), defaultConfig, Config(..))
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Libri.Types (Book(..))
 import Test.Hspec
 
@@ -29,7 +33,12 @@ b = Book
   }
 
 spec :: Spec
-spec = describe "Calibre field fingerprints" $ do
+spec = do
+  fingerprintSpec
+  syncSpec
+
+fingerprintSpec :: Spec
+fingerprintSpec = describe "Calibre field fingerprints" $ do
   it "pins the FNV-1a test vectors" $ do
     fnv1a64Hex "" `shouldBe` "cbf29ce484222325"
     fnv1a64Hex "a" `shouldBe` "af63dc4c8601ec8c"
@@ -76,3 +85,68 @@ spec = describe "Calibre field fingerprints" $ do
     fieldCanonical FTags b `shouldBe` "Arte\USHistoria"
     fieldCanonical FSeries b `shouldBe` "-"
     fieldCanonical FPublisher b `shouldBe` "+Jones"
+
+
+sampleState :: SyncState
+sampleState = SyncState $ Map.fromList
+  [ ("lib-A", LibrarySync
+      { lsPath = "/path/to/Calibre Library"
+      , lsHome = HomeYes
+      , lsBooks = Map.fromList
+          [ ("lib-A:46", SyncMapped "book-uuid" (fieldPrints b))
+          , ("lib-A:47", SyncIgnored)
+          , ("lib-A:48", SyncPending)
+          ]
+      })
+  , ("lib-B", LibrarySync "/other" HomeUnanswered Map.empty)
+  ]
+
+syncSpec :: Spec
+syncSpec = describe "Calibre sync state" $ do
+  it "round-trips through save and load" $
+    withSystemTempDirectory "libri-sync" $ \dir -> do
+      let cfg = defaultConfig { _dataDir = dir }
+      saveSyncState cfg sampleState `shouldReturn` Right ()
+      loadSyncState cfg `shouldReturn` Right sampleState
+
+  it "loads a missing file as the empty state" $
+    withSystemTempDirectory "libri-sync" $ \dir ->
+      loadSyncState (defaultConfig { _dataDir = dir }) `shouldReturn` Right emptySyncState
+
+  it "reports a malformed file without touching it" $
+    withSystemTempDirectory "libri-sync" $ \dir -> do
+      let cfg = defaultConfig { _dataDir = dir }
+          path = dir </> "calibre-sync.yaml"
+          bytes = "libraries: [oops"
+      TIO.writeFile path bytes
+      r <- loadSyncState cfg
+      case r of
+        Left (ParseError p _) -> p `shouldBe` path
+        other -> expectationFailure ("expected ParseError, got " <> show other)
+      TIO.readFile path `shouldReturn` bytes
+
+  it "accepts an unquoted yes/no for home" $
+    withSystemTempDirectory "libri-sync" $ \dir -> do
+      let cfg = defaultConfig { _dataDir = dir }
+      TIO.writeFile (dir </> "calibre-sync.yaml") $ T.intercalate "\n"
+        [ "libraries:", "  A:", "    path: /a", "    home: yes", "    books: {}"
+        , "  B:", "    path: /b", "    home: no", "    books: {}" ]
+      r <- loadSyncState cfg
+      fmap (Map.map lsHome . syncLibraries) r
+        `shouldBe` Right (Map.fromList [("A", HomeYes), ("B", HomeNo)])
+
+  it "rejects unknown field keys" $
+    withSystemTempDirectory "libri-sync" $ \dir -> do
+      TIO.writeFile (dir </> "calibre-sync.yaml") $ T.intercalate "\n"
+        [ "libraries:", "  A:", "    path: /a", "    home: no", "    books:"
+        , "      \"A:1\":", "        status: mapped", "        book: x"
+        , "        fields: {bogus: abc}" ]
+      r <- loadSyncState (defaultConfig { _dataDir = dir })
+      r `shouldSatisfy` either (const True) (const False)
+
+  it "setHomeLibrary moves the home marker" $ do
+    let mk h = LibrarySync "/p" h Map.empty
+        st = SyncState (Map.fromList [("A", mk HomeYes), ("B", mk HomeUnanswered)])
+        st' = setHomeLibrary "B" st
+    Map.map lsHome (syncLibraries st') `shouldBe`
+      Map.fromList [("A", HomeNo), ("B", HomeYes)]
