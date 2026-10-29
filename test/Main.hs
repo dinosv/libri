@@ -5,6 +5,7 @@ import qualified TypesSpec
 import qualified SearchSpec
 import qualified BatchImportSpec
 import qualified CalibreImportSpec
+import qualified CalibreReconcileSpec
 import qualified YamlSpec
 import qualified NormalizeSpec
 import qualified CommandBarSpec
@@ -24,6 +25,7 @@ main = hspec $ do
   SearchSpec.spec
   BatchImportSpec.spec
   CalibreImportSpec.spec
+  CalibreReconcileSpec.spec
   YamlSpec.spec
   NormalizeSpec.spec
   CommandBarSpec.spec

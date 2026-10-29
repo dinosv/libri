@@ -24,6 +24,7 @@ library
                     , Libri.Storage.Yaml
                     , Libri.Storage.Index
                     , Libri.Storage.CalibreImport
+                    , Libri.Storage.CalibreReconcile
                     , Libri.Storage.CalibreSync
                     , Libri.CLI.Commands
                     , Libri.CLI.BatchImport
@@ -103,6 +104,7 @@ test-suite libri-test
                     , SearchSpec
                     , BatchImportSpec
                     , CalibreImportSpec
+                    , CalibreReconcileSpec
                     , YamlSpec
                     , NormalizeSpec
                     , CommandBarSpec
