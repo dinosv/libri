@@ -3,6 +3,7 @@ module CalibreReconcileSpec (spec) where
 import Data.Aeson (Value(..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
 import Libri.Storage.CalibreReconcile
@@ -36,7 +37,12 @@ sync :: [(Text, SyncEntry)] -> Maybe LibrarySync
 sync es = Just (LibrarySync "p" HomeYes (Map.fromList es))
 
 spec :: Spec
-spec = describe "matchBook" $ do
+spec = do
+  matchSpec
+  conflictSpec
+
+matchSpec :: Spec
+matchSpec = describe "matchBook" $ do
   let owner = mk "b1" Nothing Nothing
   it "rule 1: mapped id present" $
     matchBook True (sync [("uuid:46", SyncMapped "b1" Map.empty)]) [owner] inc
@@ -79,3 +85,48 @@ spec = describe "matchBook" $ do
     let added = inc { _bookId = "added" }
         second = mk "n2" (Just "9780000000001") (Just "uuid:47")
     matchBook True Nothing [added] second `shouldBe` NoMatch
+
+conflictSpec :: Spec
+conflictSpec = describe "conflicts" $ do
+  let libri = (mk "b1" (Just "9780000000001") (Just "uuid:1"))
+        { _title = "Mine", _tags = ["a", "B"], _comments = Just "old"
+        , _location = Just "/x/y"
+        , _custom = Map.fromList
+            [ ("identifier:calibre", String "uuid:1")
+            , ("identifier:amazon", String "A1")
+            , ("identifier:openlibrary", String "OL1")
+            , ("mine", String "keep") ] }
+      cal = libri
+        { _bookId = "other", _title = "Theirs", _tags = ["b", "c"]
+        , _comments = Just "new", _location = Nothing
+        , _added = UTCTime (fromGregorian 2000 1 1) 0
+        , _custom = Map.fromList
+            [ ("identifier:calibre", String "uuid:99")
+            , ("identifier:amazon", String "A2") ] }
+  it "changedFields lists only differing or missing prints" $ do
+    let stored = fieldPrints libri
+        incoming = fieldPrints libri { _comments = Just "new" }
+    changedFields stored incoming `shouldBe` [FComments]
+    changedFields (Map.delete FRating stored) stored `shouldBe` [FRating]
+  it "differingFields drops fields already equal" $
+    differingFields [FComments, FTags] libri libri { _comments = Just "new" }
+      `shouldBe` [FComments]
+  it "TakeCalibre on FTitle copies only the title" $
+    applyChoices [(FTitle, TakeCalibre)] cal libri
+      `shouldBe` libri { _title = "Theirs" }
+  it "UnionTags keeps libri order then Calibre-only tags, deduplicated" $
+    _tags (applyChoices [(FTags, UnionTags)] cal libri)
+      `shouldBe` ["a", "B", "c"]
+  it "TakeCalibre on FIdentifiers merges and keeps libri-only keys" $ do
+    let r = _custom (applyChoices [(FIdentifiers, TakeCalibre)] cal libri)
+    Map.lookup "identifier:amazon" r `shouldBe` Just (String "A2")
+    Map.lookup "identifier:openlibrary" r `shouldBe` Just (String "OL1")
+    Map.lookup "identifier:calibre" r `shouldBe` Just (String "uuid:1")
+    Map.lookup "mine" r `shouldBe` Just (String "keep")
+  it "KeepLibri for every field changes nothing" $
+    applyChoices [(f, KeepLibri) | f <- [minBound .. maxBound]] cal libri
+      `shouldBe` libri
+  it "fieldDisplay truncates long comments to 60 characters" $ do
+    let d = fieldDisplay FComments cal { _comments = Just (T.replicate 80 "x") }
+    d `shouldBe` T.replicate 60 "x" <> "\8230"
+    fieldDisplay FAuthors cal { _authors = ["A", "B"] } `shouldBe` "A, B"

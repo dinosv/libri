@@ -4,6 +4,12 @@ module Libri.Storage.CalibreReconcile
     Match(..)
   , calibreRefOf
   , matchBook
+    -- * Conflicts
+  , FieldChoice(..)
+  , changedFields
+  , differingFields
+  , applyChoices
+  , fieldDisplay
   ) where
 
 import Data.Aeson (Value(..))
@@ -14,7 +20,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import Libri.CLI.BatchImport (normalizeISBN)
-import Libri.Storage.CalibreSync (FieldPrints, LibrarySync(..), SyncEntry(..))
+import Libri.Storage.CalibreSync
+  ( CalibreField(..), FieldPrints, LibrarySync(..), SyncEntry(..)
+  , calibreIdentifiers, fieldCanonical )
+import Libri.Text.Normalize (normalizeText)
 import Libri.Types (Book(..))
 
 -- ---------------------------------------------------------------------------
@@ -70,3 +79,77 @@ matchBook bareOk msync coll inc =
       if T.null k then Nothing else
         find (\b -> isNothing (Map.lookup "identifier:calibre" (_custom b))
                     && fmap key (_isbn b) == Just k) coll
+
+-- ---------------------------------------------------------------------------
+-- Conflicts
+-- ---------------------------------------------------------------------------
+
+-- | What to do with one field of a changed book.
+data FieldChoice = KeepLibri | TakeCalibre | UnionTags
+  deriving (Show, Eq)
+
+-- | Fields whose incoming print differs from the stored one, or is missing
+-- from the stored prints.
+changedFields :: FieldPrints -> FieldPrints -> [CalibreField]
+changedFields stored incoming =
+  [ f | (f, p) <- Map.toAscList incoming, Map.lookup f stored /= Just p ]
+
+-- | Of the given fields, those whose canonical text differs between the
+-- libri book (first) and the Calibre book (second).
+differingFields :: [CalibreField] -> Book -> Book -> [CalibreField]
+differingFields fs libri cal =
+  [ f | f <- fs, fieldCanonical f libri /= fieldCanonical f cal ]
+
+-- | Apply per-field choices.  Arguments: choices, Calibre book, libri book.
+-- Only fields chosen as 'TakeCalibre' or 'UnionTags' are touched; everything
+-- else (id, location, added, other custom keys) stays libri's.
+applyChoices :: [(CalibreField, FieldChoice)] -> Book -> Book -> Book
+applyChoices choices cal = \libri -> foldl' step libri choices
+  where
+    step bk (f, c) = case c of
+      KeepLibri   -> bk
+      TakeCalibre -> takeField f bk
+      UnionTags
+        | f == FTags -> bk { _tags = unionTags (_tags bk) (_tags cal) }
+        | otherwise  -> bk
+    takeField f bk = case f of
+      FTitle       -> bk { _title = _title cal }
+      FAuthors     -> bk { _authors = _authors cal }
+      FSeries      -> bk { _series = _series cal }
+      FSeriesIndex -> bk { _seriesIndex = _seriesIndex cal }
+      FPublisher   -> bk { _publisher = _publisher cal }
+      FPublished   -> bk { _published = _published cal }
+      FIsbn        -> bk { _isbn = _isbn cal }
+      FTags        -> bk { _tags = _tags cal }
+      FRating      -> bk { _rating = _rating cal }
+      FComments    -> bk { _comments = _comments cal }
+      FIdentifiers -> bk { _custom = Map.union (calibreIdentifiers cal) (_custom bk) }
+    unionTags mine theirs = foldl' add mine theirs
+    add acc t
+      | any ((== normalizeText t) . normalizeText) acc = acc
+      | otherwise = acc ++ [t]
+
+-- | Human-readable value of a field, for the side-by-side display.
+-- Comments are truncated to 60 characters.
+fieldDisplay :: CalibreField -> Book -> Text
+fieldDisplay field bk = case field of
+  FTitle       -> _title bk
+  FAuthors     -> T.intercalate ", " (_authors bk)
+  FSeries      -> orDash id (_series bk)
+  FSeriesIndex -> orDash (T.pack . show) (_seriesIndex bk)
+  FPublisher   -> orDash id (_publisher bk)
+  FPublished   -> orDash (T.pack . show) (_published bk)
+  FIsbn        -> orDash id (_isbn bk)
+  FTags        -> T.intercalate ", " (_tags bk)
+  FRating      -> orDash (T.pack . show) (_rating bk)
+  FComments    -> orDash truncated (_comments bk)
+  FIdentifiers -> T.intercalate ", "
+    [ T.drop (T.length "identifier:") k <> "=" <> render v
+    | (k, v) <- Map.toAscList (calibreIdentifiers bk) ]
+  where
+    orDash f = maybe "-" f
+    truncated t
+      | T.length t > 60 = T.take 60 t <> "\8230"
+      | otherwise = t
+    render (String s) = s
+    render v = T.pack (show v)
