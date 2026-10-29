@@ -1,11 +1,11 @@
 module Libri.Storage.CalibreImport
   ( importFromCalibre
-  , saveImportedBooks
+  , CalibreLibrary (..)
   , CalibreBook (..)
   , extractIsbn
   , partitionIdentifiers
   , calibreIdentifier
-  , findExistingBook
+  , parseDate
   ) where
 
 import Control.Applicative ((<|>))
@@ -13,17 +13,17 @@ import Control.Exception (bracket, try, SomeException)
 import Control.Monad (forM)
 import Data.Aeson (Value (..))
 import qualified Data.Map.Strict as Map
+import Data.Char (isSpace)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Scientific (fromFloatDigits)
 import qualified Data.Vector as V
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (Day, UTCTime, getCurrentTime, parseTimeM, defaultTimeLocale)
+import Data.Time (Day, UTCTime (..), getCurrentTime, parseTimeM, defaultTimeLocale, toGregorian)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Database.SQLite.Simple
-import Libri.Types (Book (..), Config, LibriError (..))
-import Libri.Storage.Yaml (loadBooksWithErrors, saveBook, mergeBooks)
+import Libri.Types (Book (..), LibriError (..))
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
@@ -54,24 +54,43 @@ instance FromRow CalibreBook where
       <*> field
       <*> field
 
+-- | A Calibre library read from disk: its own UUID, the path it was
+-- read from, and its books
+data CalibreLibrary = CalibreLibrary
+  { clUuid :: Text
+  , clPath :: FilePath
+  , clBooks :: [Book]
+  }
+  deriving (Show)
+
 -- | Import books from a Calibre library
-importFromCalibre :: FilePath -> IO (Either LibriError [Book])
+importFromCalibre :: FilePath -> IO (Either LibriError CalibreLibrary)
 importFromCalibre libraryPath = do
   let dbPath = libraryPath </> "metadata.db"
   exists <- doesFileExist dbPath
   if not exists
     then pure $ Left $ FileNotFound dbPath
     else do
-      result <- try $ importBooks dbPath
+      result <- try $ importBooks libraryPath dbPath
       case result of
         Left (e :: SomeException) ->
           pure $ Left $ CalibreImportError (show e)
-        Right books -> pure $ Right books
+        Right (Left err) -> pure $ Left err
+        Right (Right books) -> pure $ Right books
+-- | Import all books from the database; fails when the library has no UUID
+importBooks :: FilePath -> FilePath -> IO (Either LibriError CalibreLibrary)
+importBooks libraryPath dbPath = bracket (open dbPath) close $ \conn -> do
+  mUuid <- getLibraryUuid conn
+  case mUuid of
+    Nothing -> pure $ Left $ CalibreImportError "Calibre library has no library UUID"
+    Just libraryUuid -> do
+      books <- importBooksFor conn libraryUuid
+      pure $ Right CalibreLibrary
+        { clUuid = libraryUuid, clPath = libraryPath, clBooks = books }
 
--- | Import all books from the database
-importBooks :: FilePath -> IO [Book]
-importBooks dbPath = bracket (open dbPath) close $ \conn -> do
-  libraryUuid <- getLibraryUuid conn
+-- | Read every book in the library
+importBooksFor :: Connection -> T.Text -> IO [Book]
+importBooksFor conn libraryUuid = do
   calibreBooks <- query_ conn
     "SELECT id, title, sort, timestamp, pubdate, series_index, path, has_cover, last_modified \
     \FROM books" :: IO [CalibreBook]
@@ -90,13 +109,13 @@ importBooks dbPath = bracket (open dbPath) close $ \conn -> do
 
 -- | The Calibre library's own UUID, used to namespace book identifiers
 -- so imports from different libraries can never be confused
-getLibraryUuid :: Connection -> IO T.Text
+getLibraryUuid :: Connection -> IO (Maybe T.Text)
 getLibraryUuid conn = do
   result <- try (query_ conn "SELECT uuid FROM library_id LIMIT 1")
     :: IO (Either SomeException [Only T.Text])
   pure $ case result of
-    Right (Only u : _) -> u
-    _ -> ""
+    Right (Only u : _) | not (T.null (T.strip u)) -> Just u
+    _ -> Nothing
 
 -- | Get authors for a book
 getAuthors :: Connection -> Int -> IO [T.Text]
@@ -124,7 +143,8 @@ getTags conn bid = do
   rows <- query conn
     "SELECT t.name FROM tags t \
     \JOIN books_tags_link btl ON t.id = btl.tag \
-    \WHERE btl.book = ?" (Only bid) :: IO [Only T.Text]
+    \WHERE btl.book = ? \
+    \ORDER BY t.name" (Only bid) :: IO [Only T.Text]
   pure $ map fromOnly rows
 
 -- | Get series name for a book
@@ -235,6 +255,7 @@ convertBook libraryUuid cb authorList identifiers tagList seriesName pub rat com
   uuid <- UUID.nextRandom
 
   let pubDate = cbPubdate cb >>= parseDate
+      addedAt = cbTimestamp cb >>= validTimestamp
 
   let (maybeIsbn, otherIds) = partitionIdentifiers identifiers
       calibreRef = calibreIdentifier libraryUuid (cbId cb)
@@ -258,13 +279,28 @@ convertBook libraryUuid cb authorList identifiers tagList seriesName pub rat com
       , _comments = comm
       , _location = Map.lookup "location" customCols >>= valueToText
       , _custom = customWithIds
-      , _added = fromMaybe now (cbTimestamp cb)
+      , _added = fromMaybe now addedAt
       , _modified = cbLastModified cb
       }
 
--- | Parse a date string from Calibre
+-- | Calibre stores 0101-01-01 when a date is unset; treat years before
+-- 1000 as no date
+validTimestamp :: UTCTime -> Maybe UTCTime
+validTimestamp t
+  | utctYear t < 1000 = Nothing
+  | otherwise = Just t
+  where utctYear = (\(y, _, _) -> y) . toGregorian . utctDay
+
+-- | Parse a date string from Calibre; Nothing for unparseable dates and
+-- Calibre's 0101-01-01 "unset" sentinel
 parseDate :: T.Text -> Maybe Day
-parseDate t =
+parseDate t = do
+  d <- parseRawDate t
+  let (y, _, _) = toGregorian d
+  if y < 1000 then Nothing else Just d
+
+parseRawDate :: T.Text -> Maybe Day
+parseRawDate t =
   let str = T.unpack t
    in parseTimeM True defaultTimeLocale "%Y-%m-%d" str
         <|> parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S" str
@@ -283,7 +319,8 @@ valueToText _ = Nothing
 -- | Extract ISBN from a list of identifiers, preferring ISBN-13
 extractIsbn :: [(T.Text, T.Text)] -> Maybe T.Text
 extractIsbn ids =
-  let isbns = [val | (typ, val) <- ids, typ == "isbn"]
+  let normalise = T.toUpper . T.filter (\c -> not (isSpace c) && c /= '-')
+      isbns = [normalise val | (typ, val) <- ids, typ == "isbn"]
       isbn13s = filter (\v -> T.length v == 13) isbns
       isbn10s = filter (\v -> T.length v == 10) isbns
    in case isbn13s of
@@ -303,37 +340,3 @@ partitionIdentifiers ids =
 calibreIdentifier :: T.Text -> Int -> T.Text
 calibreIdentifier libraryUuid bid =
   libraryUuid <> ":" <> T.pack (show bid)
-
--- | Find the existing book an imported one corresponds to, if any:
--- by Calibre identifier (namespaced or the bare ID a migration
--- stores), by normalised ISBN, or by legacy numeric bookId
-findExistingBook :: [Book] -> Book -> Maybe Book
-findExistingBook existing imported =
-  let calibreRef = Map.lookup "identifier:calibre" (_custom imported)
-      bareRef = calibreRef >>= \v -> case v of
-        String s -> Just $ T.takeWhileEnd (/= ':') s
-        _ -> Nothing
-      normalize = T.filter (\c -> c /= '-' && c /= ' ')
-      matchesCalibre b = case (calibreRef, Map.lookup "identifier:calibre" (_custom b)) of
-        (Just ref, Just other) | ref == other -> True
-        _ -> case bareRef of
-          Just bare -> Map.lookup "identifier:calibre" (_custom b) == Just (String bare)
-          Nothing -> False
-      matchesIsbn b = case (_isbn imported, _isbn b) of
-        (Just i, Just j) -> normalize i == normalize j
-        _ -> False
-      matchesLegacyId b = Just (_bookId b) == bareRef
-  in listToMaybe $ filter
-       (\b -> matchesCalibre b || matchesIsbn b || matchesLegacyId b)
-       existing
-
--- | Save imported books, merging with existing entries when the book
--- is already in the collection
-saveImportedBooks :: Config -> [Book] -> IO [Either LibriError ()]
-saveImportedBooks cfg books = do
-  (_, existing) <- loadBooksWithErrors cfg
-  forM books $ \book -> do
-    let bookToSave = case findExistingBook existing book of
-          Just old -> mergeBooks book old
-          Nothing -> book
-    saveBook cfg bookToSave

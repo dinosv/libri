@@ -1,70 +1,16 @@
 module CalibreImportSpec (spec) where
 
-import Data.Aeson (Value (..))
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
-import Data.Text (Text)
-import Data.Time (UTCTime, parseTimeM, defaultTimeLocale)
-import Libri.Storage.CalibreImport (extractIsbn, partitionIdentifiers, calibreIdentifier, findExistingBook)
-import Libri.Types
+import Data.Time (fromGregorian)
+import Database.SQLite.Simple (execute_, withConnection)
+import Libri.Storage.CalibreImport (extractIsbn, partitionIdentifiers, parseDate, importFromCalibre)
+import Libri.Types (LibriError (..))
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
-
-mkBook :: Text -> Maybe Text -> Map.Map Text Value -> Book
-mkBook bid bookIsbn customFields =
-  let ts = fromJust $ parseTimeM True defaultTimeLocale "%Y-%m-%d" "2025-01-01" :: UTCTime
-  in Book
-       { _bookId = bid
-       , _isbn = bookIsbn
-       , _title = "Book " <> bid
-       , _authors = []
-       , _series = Nothing
-       , _seriesIndex = Nothing
-       , _publisher = Nothing
-       , _published = Nothing
-       , _tags = []
-       , _rating = Nothing
-       , _comments = Nothing
-       , _location = Nothing
-       , _custom = customFields
-       , _added = ts
-       , _modified = ts
-       }
 
 spec :: Spec
 spec = describe "Calibre Import" $ do
-
-  describe "findExistingBook" $ do
-    let libUuid = "lib-uuid-1"
-        calRef n = calibreIdentifier libUuid n
-        imported = mkBook "new-uuid" (Just "9780134685991")
-          (Map.fromList [("identifier:calibre", String (calRef 100))])
-
-    it "matches by namespaced calibre identifier" $ do
-      let existing = mkBook "old-uuid" Nothing
-            (Map.fromList [("identifier:calibre", String (calRef 100))])
-      _bookId <$> findExistingBook [existing] imported `shouldBe` Just "old-uuid"
-
-    it "matches a migrated book by bare calibre id" $ do
-      let existing = mkBook "old-uuid" Nothing
-            (Map.fromList [("identifier:calibre", String "100")])
-      _bookId <$> findExistingBook [existing] imported `shouldBe` Just "old-uuid"
-
-    it "matches by normalised ISBN when no calibre identifier" $ do
-      let existing = mkBook "old-uuid" (Just "978-0-13-468599-1") Map.empty
-      _bookId <$> findExistingBook [existing] imported `shouldBe` Just "old-uuid"
-
-    it "matches a legacy book whose id is the calibre number" $ do
-      let existing = mkBook "100" Nothing Map.empty
-      _bookId <$> findExistingBook [existing] imported `shouldBe` Just "100"
-
-    it "does not match a book from a different calibre library" $ do
-      let otherRef = calibreIdentifier "lib-uuid-2" 100
-          existing = mkBook "other-uuid" (Just "9999999999999")
-            (Map.fromList [("identifier:calibre", String otherRef)])
-      findExistingBook [existing] imported `shouldBe` Nothing
-
-    it "returns Nothing when there is no match" $ do
-      findExistingBook [] imported `shouldBe` Nothing
 
   describe "extractIsbn" $ do
     it "returns Nothing for empty list" $ do
@@ -81,6 +27,12 @@ spec = describe "Calibre Import" $ do
     it "returns ISBN-10 when only ISBN-10 present" $ do
       extractIsbn [("isbn", "0134685991")]
         `shouldBe` Just "0134685991"
+
+    it "normalises hyphens and spaces before choosing an ISBN" $
+      extractIsbn [("isbn", "978-84-376-0494-7")] `shouldBe` Just "9788437604947"
+
+    it "upper-cases an ISBN-10 check digit" $
+      extractIsbn [("isbn", "0-8044-2957-x")] `shouldBe` Just "080442957X"
 
     it "ignores non-isbn identifiers" $ do
       extractIsbn [("amazon", "B07N1XLQ7D"), ("google", "abc123")]
@@ -109,3 +61,21 @@ spec = describe "Calibre Import" $ do
           (maybeIsbn, others) = partitionIdentifiers ids
       maybeIsbn `shouldBe` Just "9780134685991"
       Map.lookup "identifier:amazon" others `shouldBe` Just "B07N"
+
+  describe "parseDate" $ do
+    it "treats Calibre's 0101-01-01 sentinel as no date" $
+      parseDate "0101-01-01 00:00:00+00:00" `shouldBe` Nothing
+
+    it "still parses a real Calibre date" $
+      parseDate "2007-01-01 00:00:00+00:00" `shouldBe` Just (fromGregorian 2007 1 1)
+
+  describe "importFromCalibre" $ do
+    it "fails when the library has no UUID" $
+      withSystemTempDirectory "libri-calibre" $ \dir -> do
+        withConnection (dir </> "metadata.db") $ \conn -> do
+          execute_ conn "CREATE TABLE library_id (id INTEGER PRIMARY KEY, uuid TEXT)"
+          execute_ conn "CREATE TABLE books (id INTEGER PRIMARY KEY)"
+        result <- importFromCalibre dir
+        case result of
+          Left (CalibreImportError _) -> pure ()
+          other -> expectationFailure $ "expected CalibreImportError, got " <> show (fmap (const ()) other)

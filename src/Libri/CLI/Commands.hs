@@ -28,7 +28,7 @@ import Libri.CLI.Tags (runTagRename, runTagDelete)
 import Libri.ISBN.OpenLibrary (fetchByISBN, fetchByISBNWith, newISBNManager)
 import Network.HTTP.Client (Manager)
 import Libri.Search.Fuzzy (searchBooks)
-import Libri.Storage.CalibreImport (importFromCalibre, saveImportedBooks)
+import Libri.Storage.CalibreImport (CalibreLibrary (..), importFromCalibre)
 import Libri.Storage.Index (BookIndex, buildIndex, lookupByISBN, lookupById)
 import Libri.Storage.Yaml
 import Libri.Types
@@ -438,9 +438,10 @@ runImportCalibre cfg path = do
     Left err -> do
       hPutStrLn stderr $ "Import failed: " <> show err
       exitFailure
-    Right bks -> do
+    Right lib -> do
+      let bks = clBooks lib
       TIO.putStrLn $ "Found " <> T.pack (show (length bks)) <> " books"
-      results <- saveImportedBooks cfg bks
+      results <- mapM (saveBook cfg) bks
 
       let successes = length [() | Right () <- results]
           failures = length [() | Left _ <- results]
