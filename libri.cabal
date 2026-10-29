@@ -24,6 +24,7 @@ library
                     , Libri.Storage.Yaml
                     , Libri.Storage.Index
                     , Libri.Storage.CalibreImport
+                    , Libri.Storage.CalibreSync
                     , Libri.CLI.Commands
                     , Libri.CLI.BatchImport
                     , Libri.CLI.Doctor
@@ -113,6 +114,7 @@ test-suite libri-test
                     , MigrateSpec
                     , AddBookSpec
                     , CommandsSpec
+                    , CalibreSyncSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3

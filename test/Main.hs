@@ -16,6 +16,7 @@ import qualified DoctorSpec
 import qualified MigrateSpec
 import qualified AddBookSpec
 import qualified CommandsSpec
+import qualified CalibreSyncSpec
 
 main :: IO ()
 main = hspec $ do
@@ -34,3 +35,4 @@ main = hspec $ do
   MigrateSpec.spec
   AddBookSpec.spec
   CommandsSpec.spec
+  CalibreSyncSpec.spec
