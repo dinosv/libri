@@ -10,8 +10,11 @@ module Libri.CLI.CalibreImport
   , runCalibreImport
   ) where
 
+import Control.Exception (onException)
 import Control.Monad (forM_, unless)
-import Control.Monad.State.Strict (StateT, execStateT, gets, liftIO, modify')
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing, listToMaybe)
 import Data.Text (Text)
@@ -39,10 +42,12 @@ data ImportSummary = ImportSummary
 
 -- | Import a Calibre library into the collection, asking the user through
 -- the 'Ask' and reporting through the line printer.  Aborts without writing
--- anything if a book file or the sync state cannot be read.
+-- anything if a book file or the sync state cannot be read.  If the run is
+-- interrupted (e.g. Ctrl-C), the sync state reached so far is saved and the
+-- exception is rethrown.
 runCalibreImport :: Config -> Ask -> (Text -> IO ()) -> CalibreLibrary
                  -> IO (Either LibriError ImportSummary)
-runCalibreImport cfg ask say' lib = do
+runCalibreImport cfg ask' say' lib = do
   (errs, coll) <- loadBooksWithErrors cfg
   if not (null errs)
     then pure (Left (CalibreImportError
@@ -55,16 +60,36 @@ runCalibreImport cfg ask say' lib = do
             known = Map.lookup uuid (syncLibraries st0)
             fresh = LibrarySync (clPath lib) HomeUnanswered Map.empty
             st1 = SyncState (Map.insert uuid (maybe fresh id known) (syncLibraries st0))
-            env = Env cfg ask say' uuid (isNothing known)
+            env = Env cfg ask' say' uuid (isNothing known)
             homeUnknown = maybe True ((== HomeUnanswered) . lsHome) known
             -- Only a truly first import may add everything unasked: with
             -- entries, ignored and deleted books must stay out.
             firstImport = null coll && maybe True (Map.null . lsBooks) known
             run0 = Run coll st1 emptySummary False []
-        final <- execStateT (driver env lib firstImport homeUnknown) run0
-        let setPath ls = ls { lsPath = clPath lib }
-            st' = SyncState (Map.adjust setPath uuid (syncLibraries (rSync final)))
-        fmap (const (rSum final)) <$> saveSyncState cfg st'
+            setPath ls = ls { lsPath = clPath lib }
+            save st = saveSyncState cfg
+              (SyncState (Map.adjust setPath uuid (syncLibraries st)))
+            -- An interrupted baseline must stay a baseline for the books
+            -- it did not get to; the next run is not one.
+            interrupted st
+              | envBaseline env && not firstImport = pendUnseen uuid (clBooks lib) st
+              | otherwise = st
+        ref <- newIORef run0
+        runReaderT (driver env lib firstImport homeUnknown) ref `onException` do
+          final <- readIORef ref
+          save (interrupted (rSync final)) >>= \case
+            Right () -> say' "Interrupted: the answers given so far are saved."
+            Left e -> say' ("Interrupted, and the answers could not be saved: "
+                            <> T.pack (show e))
+        final <- readIORef ref
+        fmap (const (rSum final)) <$> save (rSync final)
+
+-- | Record every incoming book that has no sync entry as pending.
+pendUnseen :: Text -> [Book] -> SyncState -> SyncState
+pendUnseen uuid books (SyncState libs) = SyncState (Map.adjust pend uuid libs)
+  where
+    pend ls = ls { lsBooks = Map.union (lsBooks ls) unseen }
+    unseen = Map.fromList [ (r, SyncPending) | b <- books, Just r <- [calibreRefOf b] ]
 
 -- ---------------------------------------------------------------------------
 -- Run state
@@ -88,7 +113,14 @@ data Run = Run
   , rUndecided :: [Book]        -- ^ newest first
   }
 
-type M = StateT Run IO
+-- | The run state lives in an 'IORef', so it survives an interrupted run.
+type M = ReaderT (IORef Run) IO
+
+gets :: (Run -> a) -> M a
+gets f = ask >>= liftIO . fmap f . readIORef
+
+modify' :: (Run -> Run) -> M ()
+modify' f = ask >>= \ref -> liftIO (modifyIORef' ref f)
 
 emptySummary :: ImportSummary
 emptySummary = ImportSummary 0 0 0 0 0 0 0

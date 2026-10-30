@@ -2,6 +2,7 @@
 
 module CalibreImportDriverSpec (spec) where
 
+import Control.Exception (AsyncException(..), throwIO)
 import Control.Monad (forM)
 import Data.Aeson (Value(..))
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
@@ -116,6 +117,18 @@ runFull dir answers lib = do
   ps <- reverse <$> readIORef promptRef
   out <- reverse <$> readIORef outRef
   pure (r, ps, out)
+
+-- | Run with scripted answers; once they run out, the next question is
+-- interrupted as by Ctrl-C.  The interrupt must propagate.
+runInterrupted :: FilePath -> [Text] -> CalibreLibrary -> IO ()
+runInterrupted dir answers lib = do
+  ansRef <- newIORef answers
+  let ask _ = atomicModifyIORef' ansRef (\case
+          []       -> ([], Nothing)
+          (a : as) -> (as, Just a))
+        >>= maybe (throwIO UserInterrupt) (pure . Just)
+  runCalibreImport (cfgFor dir) ask (const (pure ())) lib
+    `shouldThrow` (== UserInterrupt)
 
 -- | Run and require success.
 runOk :: FilePath -> [Text] -> CalibreLibrary -> IO (ImportSummary, [Text])
@@ -429,6 +442,49 @@ spec = describe "Calibre import driver" $ do
       ls <- libSync dir
       Map.lookup (refOf 7) (lsBooks ls)
         `shouldBe` Just (SyncMapped (libriId 7) (fieldPrints first))
+
+  it "Ctrl-C keeps the answers given so far" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      baselined dir
+      let c1 = (calBook 1) { _comments = Just "Nuevo uno" }
+          c2 = (calBook 2) { _title = "Libro Dos" }
+          lib = library [c1, c2, calBook 3]
+      runInterrupted dir ["c"] lib
+      _comments <$> bookById dir (libriId 1) >>= (`shouldBe` Just "Nuevo uno")
+      ls <- libSync dir
+      Map.lookup (refOf 1) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 1) (fieldPrints c1))
+      Map.lookup (refOf 2) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 2) (fieldPrints (calBook 2)))
+      -- Only the unanswered conflict is asked again.
+      (s, ps) <- runOk dir ["l"] lib
+      length ps `shouldBe` 1
+      (sumResolved s, sumUnchanged s) `shouldBe` (1, 1)
+
+  it "Ctrl-C during a baseline leaves unseen books to be asked about, not added" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      seed dir [libriBook 1, libriBook 2]
+      snap0 <- snapshot dir
+      let lib = library [calBook 1, calBook 2, calBook 3]
+      runInterrupted dir ["y"] lib
+      ls <- libSync dir
+      lsHome ls `shouldBe` HomeYes
+      Map.lookup (refOf 3) (lsBooks ls) `shouldBe` Just SyncPending
+      (s, ps) <- runOk dir ["i"] lib
+      length ps `shouldBe` 1
+      (sumAdded s, sumUnchanged s, sumIgnored s) `shouldBe` (0, 2, 1)
+      snapshot dir >>= (`shouldBe` snap0)
+
+  it "Ctrl-C at the home question leaves the baseline to be asked again" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      seed dir [libriBook 1, libriBook 2]
+      snap0 <- snapshot dir
+      let lib = library [calBook 1, calBook 2, calBook 3]
+      runInterrupted dir [] lib
+      (s, ps) <- runOk dir ["y", "i"] lib
+      length ps `shouldBe` 2
+      (sumAdded s, sumUnchanged s, sumIgnored s) `shouldBe` (0, 2, 1)
+      snapshot dir >>= (`shouldBe` snap0)
 
   it "aborts without writing anything when a book file is corrupt" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
