@@ -45,14 +45,43 @@ libri --locations
 libri --import-calibre /path/to/calibre/library
 ```
 
-Re-importing is safe. Books already matched are compared with the Calibre
-copy, and libri asks before changing anything: books that are new or whose
-match is uncertain are listed for a decision (add all, ignore all, or one by one), and where
-both sides have changed a field you choose which value to keep. Books you
-deleted in libri are not brought back unless you say so. Answers are
-remembered in `calibre-sync.yaml`, so questions are not repeated. If input
-ends before every question is answered, the command exits with an error and
-asks again next time.
+### Re-importing from Calibre
+
+Running `--import-calibre` again is safe: nothing in libri is changed
+without your say-so. The first import into an empty collection simply adds
+every book. Otherwise libri behaves as follows.
+
+The first re-import of a Calibre library is the baseline run. libri asks
+whether this is the Calibre library your collection came from; answering
+yes lets books be matched by their Calibre id. Books already in libri are
+matched and left untouched. Calibre books not in your collection are then
+listed, and you choose to add all, ignore all, or decide one by one.
+Ignored books stay out on later runs.
+
+On later runs:
+
+- books new in Calibre are added without asking;
+- books unchanged in Calibre since the last import are left alone, however
+  much you have edited them in libri;
+- when Calibre has changed a field and its new value differs from libri's,
+  you choose: keep libri's version, take Calibre's, go field by field, or
+  keep libri's for all remaining conflicts in this run. Field by field, tags
+  can also be merged (the union of both).
+
+When a Calibre book has the same ISBN as a libri book that did not come
+from Calibre, you are asked whether it is the same book or a new one.
+Books you have deleted in libri are never added back.
+
+Questions left unanswered (because input ran out) are asked again next
+time, and the command exits with an error. Pressing Ctrl-C keeps the
+answers given so far.
+
+What libri knows about each Calibre library is kept in
+`<dataDir>/calibre-sync.yaml`. To change a "no" to the home-library
+question, set that library's `home:` to `unanswered` in this file; the
+question is then asked again on the next import. If Calibre is rebuilt
+with a new library id, answer yes for the new library: books from the
+previous home library are still recognised.
 
 ## Keyboard Shortcuts (TUI)
 
