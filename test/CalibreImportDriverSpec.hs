@@ -239,6 +239,24 @@ spec = describe "Calibre import driver" $ do
       filter ("  comments" `T.isPrefixOf`) out2 `shouldSatisfy` ((== 1) . length)
       filter ("  title" `T.isPrefixOf`) out2 `shouldBe` []
 
+  it "a comments change after character 60 is shown differently for each side" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      let long = T.pack (take 200 (cycle "abcdefghij"))
+          edited = T.take 150 long <> "Z" <> T.drop 151 long
+      seed dir [(libriBook 1) { _comments = Just long }, libriBook 2]
+      _ <- runOk dir ["y", "i"]
+        (library [(calBook 1) { _comments = Just long }, calBook 2, calBook 3])
+      (_, _, out) <- runFull dir ["l"]
+        (library [(calBook 1) { _comments = Just edited }, calBook 2, calBook 3])
+      case filter ("  comments" `T.isPrefixOf`) out of
+        [line] -> do
+          let (l, c) = T.breakOn "  |  Calibre: " line
+              libriSide = T.drop (T.length "libri: ") (snd (T.breakOn "libri: " l))
+              calibreSide = T.drop (T.length "  |  Calibre: ") c
+          libriSide `shouldSatisfy` (not . T.null)
+          libriSide `shouldNotBe` calibreSide
+        other -> expectationFailure ("expected one comments line, got " <> show other)
+
   it "EOF at the conflict prompt changes nothing and asks again next run" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
       baselined dir

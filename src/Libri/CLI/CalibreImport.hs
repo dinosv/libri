@@ -20,7 +20,7 @@ import qualified Data.Text as T
 import Libri.Storage.CalibreImport (CalibreLibrary(..))
 import Libri.Storage.CalibreReconcile
   ( FieldChoice(..), Match(..), applyChoices, calibreRefOf, changedFields
-  , differingFields, fieldDisplay, matchBook )
+  , differingFields, fieldDisplays, matchBook )
 import Libri.Storage.CalibreSync
   ( CalibreField(..), HomeStatus(..), LibrarySync(..), SyncEntry(..)
   , SyncState(..), fieldKey, fieldPrints, loadSyncState, saveSyncState
@@ -258,9 +258,10 @@ conflict env inc bk fs onEof = do
         modify' $ \r -> r { rColl = map swap (rColl r) }
         settle
   where
-    sideBySide f = "  " <> T.justifyLeft 12 ' ' (fieldKey f)
-      <> "libri: " <> flat (fieldDisplay f bk) <> "  |  Calibre: " <> flat (fieldDisplay f inc)
-    flat = T.unwords . T.words
+    sideBySide f =
+      let (mine, theirs) = fieldDisplays f bk inc
+      in "  " <> T.justifyLeft 12 ' ' (fieldKey f)
+           <> "libri: " <> mine <> "  |  Calibre: " <> theirs
 
 -- | Ask per field.  On EOF the remaining fields keep libri's value; the
 -- flag says whether every field was answered.

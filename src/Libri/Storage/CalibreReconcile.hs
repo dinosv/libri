@@ -10,12 +10,15 @@ module Libri.Storage.CalibreReconcile
   , differingFields
   , applyChoices
   , fieldDisplay
+  , fieldDisplays
   ) where
 
 import Data.Aeson (Value(..))
+import Data.Char (isSpace, ord)
 import Data.List (find)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
+import Numeric (showHex)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -129,10 +132,56 @@ applyChoices choices cal = \libri -> foldl' step libri choices
       | any ((== normalizeText t) . normalizeText) acc = acc
       | otherwise = acc ++ [t]
 
--- | Human-readable value of a field, for the side-by-side display.
--- Comments are truncated to 60 characters.
+-- | Human-readable value of a field, for the side-by-side display: on one
+-- line, with comments truncated to 60 characters.
 fieldDisplay :: CalibreField -> Book -> Text
 fieldDisplay field bk = case field of
+  FComments -> cut (flat (fieldText field bk))
+  _         -> flat (fieldText field bk)
+  where
+    flat = T.unwords . T.words
+    cut t
+      | T.length t > displayWidth = T.take displayWidth t <> ellipsis
+      | otherwise = t
+
+-- | Displays of a field for the libri book (first) and the Calibre book
+-- (second).  When the plain displays would look the same although the
+-- values differ (a change past the truncation point, or in whitespace
+-- only), both show a window starting about 20 characters before the first
+-- difference, with whitespace made visible.
+fieldDisplays :: CalibreField -> Book -> Book -> (Text, Text)
+fieldDisplays field libri cal
+  | dl /= dc || tl == tc = (dl, dc)
+  | otherwise = (window tl, window tc)
+  where
+    dl = fieldDisplay field libri
+    dc = fieldDisplay field cal
+    tl = fieldText field libri
+    tc = fieldText field cal
+    firstDiff = maybe 0 (\(p, _, _) -> T.length p) (T.commonPrefixes tl tc)
+    start = max 0 (firstDiff - 20)
+    window t =
+      let rest = T.drop start t
+          piece = T.take displayWidth rest
+      in (if start > 0 then ellipsis else "")
+         <> T.concatMap visible piece
+         <> (if T.length rest > displayWidth then ellipsis else "")
+    visible c = case c of
+      ' '  -> "\9251"   -- open box
+      '\n' -> "\8629"   -- downwards arrow with corner leftwards
+      '\t' -> "\8677"   -- rightwards arrow to bar
+      _ | isSpace c -> "<U+" <> T.toUpper (T.pack (showHex (ord c) "")) <> ">"
+        | otherwise -> T.singleton c
+
+displayWidth :: Int
+displayWidth = 60
+
+ellipsis :: Text
+ellipsis = "\8230"
+
+-- | Full value of a field as text, untruncated.
+fieldText :: CalibreField -> Book -> Text
+fieldText field bk = case field of
   FTitle       -> _title bk
   FAuthors     -> T.intercalate ", " (_authors bk)
   FSeries      -> orDash id (_series bk)
@@ -142,14 +191,11 @@ fieldDisplay field bk = case field of
   FIsbn        -> orDash id (_isbn bk)
   FTags        -> T.intercalate ", " (_tags bk)
   FRating      -> orDash (T.pack . show) (_rating bk)
-  FComments    -> orDash truncated (_comments bk)
+  FComments    -> orDash id (_comments bk)
   FIdentifiers -> T.intercalate ", "
     [ T.drop (T.length "identifier:") k <> "=" <> render v
     | (k, v) <- Map.toAscList (calibreIdentifiers bk) ]
   where
     orDash f = maybe "-" f
-    truncated t
-      | T.length t > 60 = T.take 60 t <> "\8230"
-      | otherwise = t
     render (String s) = s
     render v = T.pack (show v)

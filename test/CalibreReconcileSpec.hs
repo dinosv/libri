@@ -130,3 +130,28 @@ conflictSpec = describe "conflicts" $ do
     let d = fieldDisplay FComments cal { _comments = Just (T.replicate 80 "x") }
     d `shouldBe` T.replicate 60 "x" <> "\8230"
     fieldDisplay FAuthors cal { _authors = ["A", "B"] } `shouldBe` "A, B"
+  it "fieldDisplays keeps the plain displays when they already differ" $ do
+    let a = libri { _comments = Just (T.replicate 80 "x") }
+        b = libri { _comments = Just (T.replicate 80 "y") }
+    fieldDisplays FComments a b `shouldBe` (fieldDisplay FComments a, fieldDisplay FComments b)
+  it "fieldDisplays shows a difference after the truncation point" $ do
+    let base = T.pack (take 200 (cycle "abcdefghij"))
+        edited = T.take 150 base <> "Z" <> T.drop 151 base
+        (dl, dc) = fieldDisplays FComments libri { _comments = Just base }
+                                            libri { _comments = Just edited }
+    T.length base `shouldBe` 200
+    dl `shouldNotBe` dc
+    dc `shouldSatisfy` ("Z" `T.isInfixOf`)
+    dl `shouldSatisfy` ("\8230" `T.isPrefixOf`)
+    T.length dl `shouldSatisfy` (<= 62)
+  it "fieldDisplays makes a whitespace-only difference visible" $ do
+    let short = fieldDisplays FComments libri { _comments = Just "uno dos" }
+                                         libri { _comments = Just "uno  dos" }
+    fst short `shouldNotBe` snd short
+    let base = T.replicate 200 "w"
+        nl = T.take 150 base <> "\n" <> T.drop 150 base
+        sp = T.take 150 base <> " " <> T.drop 150 base
+        long = fieldDisplays FComments libri { _comments = Just nl }
+                                       libri { _comments = Just sp }
+    fst long `shouldNotBe` snd long
+    fst long `shouldNotSatisfy` ("\n" `T.isInfixOf`)
