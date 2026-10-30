@@ -108,10 +108,16 @@ changedFields stored incoming =
   [ f | (f, p) <- Map.toAscList incoming, Map.lookup f stored /= Just p ]
 
 -- | Of the given fields, those whose canonical text differs between the
--- libri book (first) and the Calibre book (second).
+-- libri book (first) and the Calibre book (second).  Identifiers differ
+-- only if taking Calibre's would change libri's: libri may hold more
+-- identifiers than Calibre, and taking Calibre's never removes any.
 differingFields :: [CalibreField] -> Book -> Book -> [CalibreField]
-differingFields fs libri cal =
-  [ f | f <- fs, fieldCanonical f libri /= fieldCanonical f cal ]
+differingFields fs libri cal = filter differs fs
+  where
+    differs = \case
+      FIdentifiers ->
+        Map.union (calibreIdentifiers cal) (_custom libri) /= _custom libri
+      f -> fieldCanonical f libri /= fieldCanonical f cal
 
 -- | Apply per-field choices.  Arguments: choices, Calibre book, libri book.
 -- Only fields chosen as 'TakeCalibre' or 'UnionTags' are touched; everything

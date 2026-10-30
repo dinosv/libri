@@ -125,6 +125,13 @@ conflictSpec = describe "conflicts" $ do
   it "differingFields drops fields already equal" $
     differingFields [FComments, FTags] libri libri { _comments = Just "new" }
       `shouldBe` [FComments]
+  it "differingFields: Calibre identifiers already held by libri do not differ" $ do
+    let subset = cal { _custom = Map.fromList
+          [ ("identifier:calibre", String "uuid:99"), ("identifier:amazon", String "A1") ] }
+    differingFields [FIdentifiers] libri subset `shouldBe` []
+    differingFields [FIdentifiers] libri cal `shouldBe` [FIdentifiers]
+    let extra = subset { _custom = Map.insert "identifier:goodreads" (String "G1") (_custom subset) }
+    differingFields [FIdentifiers] libri extra `shouldBe` [FIdentifiers]
   it "TakeCalibre on FTitle copies only the title" $
     applyChoices [(FTitle, TakeCalibre)] cal libri
       `shouldBe` libri { _title = "Theirs" }
