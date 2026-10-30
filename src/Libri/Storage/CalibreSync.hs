@@ -126,7 +126,9 @@ calibreIdentifiers = Map.filterWithKey keep . _custom
 -- ---------------------------------------------------------------------------
 
 -- | Whether a Calibre library is the one this libri collection lives in.
-data HomeStatus = HomeYes | HomeNo | HomeUnanswered
+-- 'HomeFormer' is a library that was the home library until another one
+-- (typically the same library rebuilt with a new UUID) replaced it.
+data HomeStatus = HomeYes | HomeNo | HomeFormer | HomeUnanswered
   deriving (Show, Eq)
 
 -- | What is known about one Calibre book.  'SyncPending' means it was seen
@@ -152,19 +154,21 @@ newtype SyncState = SyncState { syncLibraries :: Map Text LibrarySync }
 emptySyncState :: SyncState
 emptySyncState = SyncState Map.empty
 
--- | Make a library the home library; any other home library becomes 'HomeNo'.
+-- | Make a library the home library; the previous home library becomes
+-- 'HomeFormer', so books imported from it can still be matched by id.
 setHomeLibrary :: Text -> SyncState -> SyncState
 setHomeLibrary uuid (SyncState libs) = SyncState (Map.mapWithKey mark libs)
   where
     mark k ls
-      | k == uuid           = ls { lsHome = HomeYes }
-      | lsHome ls == HomeYes = ls { lsHome = HomeNo }
-      | otherwise           = ls
+      | k == uuid            = ls { lsHome = HomeYes }
+      | lsHome ls == HomeYes = ls { lsHome = HomeFormer }
+      | otherwise            = ls
 
 instance ToJSON HomeStatus where
   toJSON = String . \case
     HomeYes        -> "yes"
     HomeNo         -> "no"
+    HomeFormer     -> "former"
     HomeUnanswered -> "unanswered"
 
 -- | Also accepts YAML booleans, since an unquoted yes/no in a hand-edited
@@ -175,6 +179,7 @@ instance FromJSON HomeStatus where
   parseJSON v = withText "HomeStatus" (\case
     "yes"        -> pure HomeYes
     "no"         -> pure HomeNo
+    "former"     -> pure HomeFormer
     "unanswered" -> pure HomeUnanswered
     t            -> fail ("unknown home status: " <> T.unpack t)) v
 

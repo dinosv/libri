@@ -52,11 +52,14 @@ calibreRefOf bk = case Map.lookup "identifier:calibre" (_custom bk) of
   _               -> Nothing
 
 -- | Find the libri book for an incoming Calibre book, by strict priority:
--- sync entry, namespaced ref, bare id (only if the first argument is True,
--- i.e. this is the home library), then ISBN among books carrying no
--- @identifier:calibre@ at all.
-matchBook :: Bool -> Maybe LibrarySync -> [Book] -> Book -> Match
-matchBook bareOk msync coll inc =
+-- sync entry, namespaced ref, same Calibre id (only for the home library),
+-- then ISBN among books carrying no @identifier:calibre@ at all.
+--
+-- The first argument is 'Nothing' unless this is the home library; for the
+-- home library it carries the UUIDs of former home libraries, and the
+-- same-id rule matches a bare id or a former home library's namespaced ref.
+matchBook :: Maybe [Text] -> Maybe LibrarySync -> [Book] -> Book -> Match
+matchBook homeOf msync coll inc =
   case ref >>= \r -> msync >>= Map.lookup r . lsBooks of
     Just (SyncMapped bid ps) ->
       maybe MatchDeletedInLibri (`MatchMapped` ps)
@@ -65,16 +68,17 @@ matchBook bareOk msync coll inc =
     Just SyncPending -> MatchPending
     Nothing
       | Just bk <- byRef -> MatchByRef bk
-      | bareOk, Just bk <- byBare -> MatchBareRef bk
+      | Just formers <- homeOf, Just bk <- bySameId formers -> MatchBareRef bk
       | Just bk <- byIsbn -> MatchIsbnGuess bk
       | otherwise -> NoMatch
   where
     ref = calibreRefOf inc
     byRef = ref >>= \r -> find ((== Just r) . calibreRefOf) coll
-    byBare = do
+    bySameId formers = do
       r <- ref
       let bare = snd (T.breakOnEnd ":" r)
-      find ((== Just bare) . calibreRefOf) coll
+          refs = bare : [ u <> ":" <> bare | u <- formers ]
+      find (maybe False (`elem` refs) . calibreRefOf) coll
     key = T.toUpper . normalizeISBN
     byIsbn = do
       i <- _isbn inc

@@ -78,6 +78,14 @@ refOf n = libUuid <> ":" <> tshow n
 library :: [Book] -> CalibreLibrary
 library = CalibreLibrary libUuid "/calibre/Library"
 
+-- | Calibre book @n@ as another library (with the given UUID) has it.
+calBookIn :: Text -> Int -> Book
+calBookIn uuid n = (calBook n)
+  { _custom = Map.singleton "identifier:calibre" (String (uuid <> ":" <> tshow n)) }
+
+libraryIn :: Text -> [Book] -> CalibreLibrary
+libraryIn uuid = CalibreLibrary uuid ("/calibre/" <> T.unpack uuid)
+
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
@@ -297,6 +305,24 @@ spec = describe "Calibre import driver" $ do
         `shouldBe` Just (SyncMapped (libriId 1) (fieldPrints c1))
       Map.lookup (refOf 2) (lsBooks ls)
         `shouldBe` Just (SyncMapped (libriId 2) (fieldPrints c2))
+
+  it "a rebuilt home library matches books imported from the former home" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      -- Books 1-3 come from the home library; book 9 from a foreign one.
+      _ <- runOk dir [] (library [calBook 1, calBook 2, calBook 3])
+      _ <- runOk dir ["n", "a"] (libraryIn "foreign" [calBookIn "foreign" 9])
+      snap0 <- snapshot dir
+      let rebuilt = libraryIn "rebuilt" (map (calBookIn "rebuilt") [1, 2, 3, 9])
+      (s, ps) <- runOk dir ["y", "i"] rebuilt
+      length ps `shouldBe` 2
+      (sumAdded s, sumUnchanged s, sumIgnored s) `shouldBe` (0, 3, 1)
+      snapshot dir >>= (`shouldBe` snap0)
+      st <- loadSyncState (cfgFor dir) >>= either (fail . show) pure
+      Map.map lsHome (syncLibraries st) `shouldBe` Map.fromList
+        [(libUuid, HomeFormer), ("foreign", HomeNo), ("rebuilt", HomeYes)]
+      fmap (Map.lookup "rebuilt:2" . lsBooks) (Map.lookup "rebuilt" (syncLibraries st))
+        `shouldBe` Just (Just (SyncMapped (_bookId (calBook 2))
+                                          (fieldPrints (calBookIn "rebuilt" 2))))
 
   it "EOF at the conflict prompt changes nothing and asks again next run" $
     withSystemTempDirectory "libri-drv" $ \dir -> do

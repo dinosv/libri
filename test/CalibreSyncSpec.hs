@@ -99,6 +99,7 @@ sampleState = SyncState $ Map.fromList
           ]
       })
   , ("lib-B", LibrarySync "/other" HomeUnanswered Map.empty)
+  , ("lib-C", LibrarySync "/before-rebuild" HomeFormer Map.empty)
   ]
 
 syncSpec :: Spec
@@ -149,4 +150,20 @@ syncSpec = describe "Calibre sync state" $ do
         st = SyncState (Map.fromList [("A", mk HomeYes), ("B", mk HomeUnanswered)])
         st' = setHomeLibrary "B" st
     Map.map lsHome (syncLibraries st') `shouldBe`
-      Map.fromList [("A", HomeNo), ("B", HomeYes)]
+      Map.fromList [("A", HomeFormer), ("B", HomeYes)]
+
+  it "setHomeLibrary demotes the previous home to former, leaving no and former alone" $ do
+    let mk h = LibrarySync "/p" h Map.empty
+        st = SyncState (Map.fromList
+          [("A", mk HomeFormer), ("B", mk HomeYes), ("C", mk HomeNo), ("D", mk HomeUnanswered)])
+    Map.map lsHome (syncLibraries (setHomeLibrary "D" st)) `shouldBe`
+      Map.fromList [("A", HomeFormer), ("B", HomeFormer), ("C", HomeNo), ("D", HomeYes)]
+
+  it "writes and reads a former home library as \"former\"" $
+    withSystemTempDirectory "libri-sync" $ \dir -> do
+      let cfg = defaultConfig { _dataDir = dir }
+          st = SyncState (Map.singleton "A" (LibrarySync "/a" HomeFormer Map.empty))
+      saveSyncState cfg st `shouldReturn` Right ()
+      raw <- TIO.readFile (dir </> "calibre-sync.yaml")
+      raw `shouldSatisfy` ("home: former" `T.isInfixOf`)
+      loadSyncState cfg `shouldReturn` Right st

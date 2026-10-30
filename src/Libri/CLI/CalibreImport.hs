@@ -137,10 +137,13 @@ driver :: Env -> CalibreLibrary -> Bool -> Bool -> M ()
 driver env lib emptyCollection homeUnknown
   | emptyCollection = makeHome env >> mapM_ (addBook env) (clBooks lib)
   | otherwise = do
-      bareOk <- if envBaseline env || homeUnknown
+      isHome <- if envBaseline env || homeUnknown
         then askHome env lib
         else maybe False ((== HomeYes) . lsHome) <$> thisLibrary env
-      mapM_ (importOne env bareOk) (clBooks lib)
+      formers <- gets (Map.keys . Map.filter ((== HomeFormer) . lsHome)
+                         . syncLibraries . rSync)
+      let homeOf = if isHome then Just formers else Nothing
+      mapM_ (importOne env homeOf) (clBooks lib)
       decideUndecided env
 
 -- | Ask whether this is the home library; True only on yes.
@@ -158,20 +161,20 @@ askHome env lib = do
 -- pending entry, so a book left undecided because the home question went
 -- unanswered is mapped by its bare id once that is answered, instead of
 -- being offered as new.
-matchIncoming :: Env -> Bool -> Book -> M Match
-matchIncoming env bareOk inc = do
+matchIncoming :: Env -> Maybe [Text] -> Book -> M Match
+matchIncoming env homeOf inc = do
   ls <- thisLibrary env
   coll <- gets rColl
-  pure $ case matchBook bareOk ls coll inc of
+  pure $ case matchBook homeOf ls coll inc of
     MatchPending ->
       let forget l = l { lsBooks = maybe id Map.delete (calibreRefOf inc) (lsBooks l) }
-      in case matchBook bareOk (forget <$> ls) coll inc of
+      in case matchBook homeOf (forget <$> ls) coll inc of
            NoMatch -> MatchPending
            m       -> m
     m -> m
 
-importOne :: Env -> Bool -> Book -> M ()
-importOne env bareOk inc = matchIncoming env bareOk inc >>= \case
+importOne :: Env -> Maybe [Text] -> Book -> M ()
+importOne env homeOf inc = matchIncoming env homeOf inc >>= \case
   NoMatch
     | envBaseline env -> undecided
     | otherwise -> addBook env inc
