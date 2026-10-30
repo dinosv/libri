@@ -83,6 +83,12 @@ matchSpec = describe "matchBook" $ do
       `shouldBe` NoMatch
     matchBook (Just []) Nothing [mk "r" (Just "9780000000001") (Just "other:5")] inc
       `shouldBe` NoMatch
+  it "rule 4 skips books already mapped from this library" $ do
+    let x = mk "x" (Just "9780000000001") Nothing
+    matchBook Nothing (sync [("uuid:45", SyncMapped "x" Map.empty)]) [x] inc
+      `shouldBe` NoMatch
+    matchBook Nothing (sync [("uuid:45", SyncMapped "y" Map.empty)]) [x] inc
+      `shouldBe` MatchIsbnGuess x
   it "rule 5: no match" $ matchBook (Just []) Nothing [owner] inc `shouldBe` NoMatch
   it "ref beats ISBN regardless of order" $ do
     let byRef = mk "a" Nothing (Just "uuid:46")

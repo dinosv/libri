@@ -416,6 +416,20 @@ spec = describe "Calibre import driver" $ do
       (sumResolved s2, sumAdded s2) `shouldBe` (1, 0)
       _comments <$> bookById dir (libriId 7) >>= (`shouldBe` Just "Suyo")
 
+  it "ISBN guess: a libri book already chosen as the same book is not offered again" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      let mine = (blank (libriId 7) "Libro 7") { _isbn = Just "9780000000001" }
+          first = (calBook 7) { _isbn = Just "9780000000001" }
+          second = (calBook 8) { _isbn = Just "978-0-00-000000-1" }
+      seed dir [mine]
+      (s, ps) <- runOk dir ["n", "s", "l", "a"] (library [first, second])
+      filter ("same book" `T.isInfixOf`) ps `shouldSatisfy` ((== 1) . length)
+      (sumAdded s, sumResolved s, sumUnanswered s) `shouldBe` (1, 1, 0)
+      _ <- bookById dir (_bookId second)
+      ls <- libSync dir
+      Map.lookup (refOf 7) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 7) (fieldPrints first))
+
   it "aborts without writing anything when a book file is corrupt" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
       seed dir [libriBook 1]

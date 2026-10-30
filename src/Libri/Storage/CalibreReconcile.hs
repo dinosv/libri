@@ -18,6 +18,7 @@ import Data.Char (isSpace, ord)
 import Data.List (find)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
+import qualified Data.Set as Set
 import Numeric (showHex)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -53,7 +54,8 @@ calibreRefOf bk = case Map.lookup "identifier:calibre" (_custom bk) of
 
 -- | Find the libri book for an incoming Calibre book, by strict priority:
 -- sync entry, namespaced ref, same Calibre id (only for the home library),
--- then ISBN among books carrying no @identifier:calibre@ at all.
+-- then ISBN among books carrying no @identifier:calibre@ at all and not
+-- already mapped from another record of this library.
 --
 -- The first argument is 'Nothing' unless this is the home library; for the
 -- home library it carries the UUIDs of former home libraries, and the
@@ -85,7 +87,11 @@ matchBook homeOf msync coll inc =
       let k = key i
       if T.null k then Nothing else
         find (\b -> isNothing (Map.lookup "identifier:calibre" (_custom b))
-                    && fmap key (_isbn b) == Just k) coll
+                    && fmap key (_isbn b) == Just k
+                    && not (_bookId b `Set.member` mappedIds)) coll
+    -- libri books another Calibre record of this library already maps to
+    mappedIds = Set.fromList
+      [ bid | Just ls <- [msync], SyncMapped bid _ <- Map.elems (lsBooks ls) ]
 
 -- ---------------------------------------------------------------------------
 -- Conflicts
