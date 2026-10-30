@@ -15,7 +15,8 @@ LIBRI=$(cabal list-bin libri)
 ## Scratch environment
 
 libri reads a YAML config (`-c PATH`) whose `dataDir` holds `books/*.yaml`
-plus `locations.yaml`. Never point it at the real `data/` directory.
+plus `locations.yaml`. Never point it at the real collection, which lives
+outside this repo (see `dataDir` in `~/.config/libri/config.yaml`).
 
 ```bash
 SCRATCH=$(mktemp -d)

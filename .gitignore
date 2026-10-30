@@ -3,3 +3,4 @@ calibre-source/
 *.tar.gz
 .serena/
 /libri
+/data/
