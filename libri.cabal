@@ -28,6 +28,7 @@ library
                     , Libri.Storage.CalibreSync
                     , Libri.CLI.Commands
                     , Libri.CLI.BatchImport
+                    , Libri.CLI.CalibreImport
                     , Libri.CLI.Doctor
                     , Libri.CLI.Enrich
                     , Libri.CLI.Migrate
@@ -117,6 +118,7 @@ test-suite libri-test
                     , AddBookSpec
                     , CommandsSpec
                     , CalibreSyncSpec
+                    , CalibreImportDriverSpec
     build-depends:    base
                     , libri
                     , hspec >=2.10 && <3
