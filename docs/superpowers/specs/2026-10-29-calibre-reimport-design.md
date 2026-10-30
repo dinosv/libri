@@ -232,3 +232,27 @@ failures. Exit status is non-zero on any save failure.
   *The Elements of Typographic Style* (its pre-migration id was an
   ISBN; the book is not in Calibre) is removed as part of this work, so
   rule 4 can match it if Calibre ever gains the book.
+
+## Amendments after the final review (2026-10-29)
+
+Rulings made by the controller during the final whole-branch review:
+
+- Home status gains a fourth value, former. Answering yes for a new
+  home library demotes the previous home library to former, not no.
+  Rule 3 for the home library also matches a libri book whose
+  `identifier:calibre` is `<u>:<calibreId>` for any former home
+  library `u`, so books imported from the old library are still found
+  after a rebuild with a new UUID.
+- Rule 4 skips libri books that a sync entry of this library already
+  maps to, including entries recorded earlier in the same run.
+- Conflicts (sections 2 and 4) do not raise identifiers as a differing
+  field when taking Calibre's identifiers would not change libri's.
+- The empty-collection shortcut (section 3) applies only when the sync
+  state has no book entries for the library; otherwise the normal flow
+  runs, so ignored and deleted books stay out.
+- An interrupted run (Ctrl-C) saves the sync state reached so far. On
+  an interrupted baseline run, every incoming book without an entry is
+  recorded as pending, so the next run still asks about it.
+- When the truncated displays of a field look the same on both sides,
+  the side-by-side shows a window around the first difference, with
+  whitespace made visible.
