@@ -181,7 +181,7 @@ importOne env bareOk inc = matchIncoming env bareOk inc >>= \case
   MatchMapped bk stored ->
     case differingFields (changedFields stored (fieldPrints inc)) bk inc of
       [] -> unchanged bk
-      fs -> conflict env inc bk fs
+      fs -> conflict env inc bk fs (pure ())
   MatchIsbnGuess bk -> do
     say env ("Same ISBN as a libri book without a Calibre id: " <> describe bk)
     a <- choose env ("Is " <> describe inc <> " the same book? [s]ame book / [n]ew book ")
@@ -191,7 +191,10 @@ importOne env bareOk inc = matchIncoming env bareOk inc >>= \case
       Just False -> addBook env inc
       Just True -> case differingFields [minBound .. maxBound] bk inc of
         [] -> unchanged bk
+        -- On EOF, keep the link but no prints, so every field counts as
+        -- changed and the conflict (not "same book?") comes back.
         fs -> conflict env inc bk fs
+                (record env inc (SyncMapped (_bookId bk) Map.empty))
   MatchIgnored -> count Ignored
   MatchDeletedInLibri -> do
     say env ("Skipped, deleted in libri: " <> describe inc)
@@ -221,11 +224,14 @@ saveFailed env bk e = do
 
 data Resolution = KeepAll | TakeAll | ByField | KeepRest
 
--- | Ask how to settle the fields where Calibre's change differs from libri,
--- then store Calibre's prints whatever the answer.  If the changed book
--- cannot be saved, the old entry stays so the question comes back.
-conflict :: Env -> Book -> Book -> [CalibreField] -> M ()
-conflict env inc bk fs = do
+-- | Ask how to settle the fields where Calibre's change differs from libri.
+-- Fields already chosen are saved.  Once every field is decided, Calibre's
+-- prints are stored.  On EOF the last argument runs instead (the existing
+-- entry is otherwise left as it is), so the undecided fields are asked
+-- about again next run.  If the changed book cannot be saved, the entry
+-- is left alone too.
+conflict :: Env -> Book -> Book -> [CalibreField] -> M () -> M ()
+conflict env inc bk fs onEof = do
   keepRest <- gets rKeepAll
   (choices, answered) <- if keepRest
     then say env ("Kept libri: " <> describe inc) >> pure ([], True)
@@ -241,15 +247,16 @@ conflict env inc bk fs = do
         Just ByField  -> fieldByField env fs
   count (if answered then Resolved else Unanswered)
   let updated = applyChoices choices inc bk
+      settle = if answered then recordMapping env inc bk else onEof
   if updated == bk
-    then recordMapping env inc bk
+    then settle
     -- saveBook stamps _modified with the current time.
     else liftIO (saveBook (envCfg env) updated) >>= \case
       Left e -> saveFailed env bk e
       Right () -> do
         let swap b = if _bookId b == _bookId bk then updated else b
         modify' $ \r -> r { rColl = map swap (rColl r) }
-        recordMapping env inc bk
+        settle
   where
     sideBySide f = "  " <> T.justifyLeft 12 ' ' (fieldKey f)
       <> "libri: " <> flat (fieldDisplay f bk) <> "  |  Calibre: " <> flat (fieldDisplay f inc)

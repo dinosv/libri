@@ -89,7 +89,12 @@ tshow = T.pack . show
 -- prompts that were asked (including those that hit EOF).
 runWith :: FilePath -> [Text] -> CalibreLibrary
         -> IO (Either LibriError ImportSummary, [Text])
-runWith dir answers lib = do
+runWith dir answers lib = (\(r, ps, _) -> (r, ps)) <$> runFull dir answers lib
+
+-- | As 'runWith', also returning the printed lines.
+runFull :: FilePath -> [Text] -> CalibreLibrary
+        -> IO (Either LibriError ImportSummary, [Text], [Text])
+runFull dir answers lib = do
   ansRef <- newIORef answers
   promptRef <- newIORef []
   outRef <- newIORef ([] :: [Text])
@@ -101,7 +106,8 @@ runWith dir answers lib = do
       say l = modifyIORef' outRef (l :)
   r <- runCalibreImport (cfgFor dir) ask say lib
   ps <- reverse <$> readIORef promptRef
-  pure (r, ps)
+  out <- reverse <$> readIORef outRef
+  pure (r, ps, out)
 
 -- | Run and require success.
 runOk :: FilePath -> [Text] -> CalibreLibrary -> IO (ImportSummary, [Text])
@@ -222,6 +228,34 @@ spec = describe "Calibre import driver" $ do
       _title bk `shouldBe` "Libro Uno"
       _comments bk `shouldBe` Just "Comentario original"
       length <$> loaded dir >>= (`shouldBe` 2)
+      -- The entry keeps the baseline prints, so the undecided comments
+      -- come back next run; the title already taken is not asked again.
+      ls <- libSync dir
+      Map.lookup (refOf 1) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 1) (fieldPrints (calBook 1)))
+      (r2, ps2, out2) <- runFull dir ["l"] (library [changed, calBook 2, calBook 3])
+      fmap sumResolved r2 `shouldBe` Right 1
+      length ps2 `shouldBe` 1
+      filter ("  comments" `T.isPrefixOf`) out2 `shouldSatisfy` ((== 1) . length)
+      filter ("  title" `T.isPrefixOf`) out2 `shouldBe` []
+
+  it "EOF at the conflict prompt changes nothing and asks again next run" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      baselined dir
+      snap0 <- snapshot dir
+      let changed = (calBook 1) { _comments = Just "Nuevo comentario" }
+          lib = library [changed, calBook 2, calBook 3]
+      (s, ps) <- runOk dir [] lib
+      length ps `shouldBe` 1
+      (sumUnanswered s, sumResolved s) `shouldBe` (1, 0)
+      snapshot dir >>= (`shouldBe` snap0)
+      ls <- libSync dir
+      Map.lookup (refOf 1) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 1) (fieldPrints (calBook 1)))
+      (s2, ps2) <- runOk dir ["c"] lib
+      length ps2 `shouldBe` 1
+      sumResolved s2 `shouldBe` 1
+      _comments <$> bookById dir (libriId 1) >>= (`shouldBe` Just "Nuevo comentario")
 
   it "non-interactive baseline: nothing added, home unanswered, books pending" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
@@ -265,6 +299,26 @@ spec = describe "Calibre import driver" $ do
       lsHome ls `shouldBe` HomeNo
       Map.lookup (refOf 7) (lsBooks ls)
         `shouldBe` Just (SyncMapped (libriId 7) (fieldPrints theirs))
+
+  it "ISBN guess: [s] then EOF keeps the link and asks the conflict again" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      let mine = (blank (libriId 7) "Libro 7")
+            { _isbn = Just "9780000000001", _comments = Just "Mío" }
+          theirs = (calBook 7) { _isbn = Just "9780000000001", _comments = Just "Suyo" }
+          lib = library [theirs]
+      seed dir [mine]
+      snap0 <- snapshot dir
+      (s, ps) <- runOk dir ["n", "s"] lib
+      length ps `shouldBe` 3
+      sumUnanswered s `shouldBe` 1
+      snapshot dir >>= (`shouldBe` snap0)
+      ls <- libSync dir
+      Map.lookup (refOf 7) (lsBooks ls) `shouldBe` Just (SyncMapped (libriId 7) Map.empty)
+      (s2, ps2) <- runOk dir ["c"] lib
+      length ps2 `shouldBe` 1
+      filter ("same book" `T.isInfixOf`) ps2 `shouldBe` []
+      (sumResolved s2, sumAdded s2) `shouldBe` (1, 0)
+      _comments <$> bookById dir (libriId 7) >>= (`shouldBe` Just "Suyo")
 
   it "aborts without writing anything when a book file is corrupt" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
