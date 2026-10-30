@@ -57,8 +57,11 @@ runCalibreImport cfg ask say' lib = do
             st1 = SyncState (Map.insert uuid (maybe fresh id known) (syncLibraries st0))
             env = Env cfg ask say' uuid (isNothing known)
             homeUnknown = maybe True ((== HomeUnanswered) . lsHome) known
+            -- Only a truly first import may add everything unasked: with
+            -- entries, ignored and deleted books must stay out.
+            firstImport = null coll && maybe True (Map.null . lsBooks) known
             run0 = Run coll st1 emptySummary False []
-        final <- execStateT (driver env lib (null coll) homeUnknown) run0
+        final <- execStateT (driver env lib firstImport homeUnknown) run0
         let setPath ls = ls { lsPath = clPath lib }
             st' = SyncState (Map.adjust setPath uuid (syncLibraries (rSync final)))
         fmap (const (rSum final)) <$> saveSyncState cfg st'
@@ -131,11 +134,12 @@ recordMapping env inc bk = record env inc (SyncMapped (_bookId bk) (fieldPrints 
 -- Flow
 -- ---------------------------------------------------------------------------
 
--- | Arguments after the library: the collection is empty; the home
--- question is still open.
+-- | Arguments after the library: the collection is empty and the sync
+-- state has no book entries for this library; the home question is still
+-- open.
 driver :: Env -> CalibreLibrary -> Bool -> Bool -> M ()
-driver env lib emptyCollection homeUnknown
-  | emptyCollection = makeHome env >> mapM_ (addBook env) (clBooks lib)
+driver env lib firstImport homeUnknown
+  | firstImport = makeHome env >> mapM_ (addBook env) (clBooks lib)
   | otherwise = do
       isHome <- if envBaseline env || homeUnknown
         then askHome env lib

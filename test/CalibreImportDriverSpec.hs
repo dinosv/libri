@@ -324,6 +324,17 @@ spec = describe "Calibre import driver" $ do
         `shouldBe` Just (Just (SyncMapped (_bookId (calBook 2))
                                           (fieldPrints (calBookIn "rebuilt" 2))))
 
+  it "an emptied collection with sync entries runs the normal flow" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      baselined dir
+      loaded dir >>= mapM_ (\bk -> deleteBook (cfgFor dir) bk >>= either (fail . show) pure)
+      (s, ps) <- runOk dir [] (library [calBook 1, calBook 2, calBook 3])
+      ps `shouldBe` []
+      (sumAdded s, sumIgnored s, sumDeletedInLibri s) `shouldBe` (0, 1, 2)
+      loaded dir >>= (`shouldBe` [])
+      ls <- libSync dir
+      Map.lookup (refOf 3) (lsBooks ls) `shouldBe` Just SyncIgnored
+
   it "EOF at the conflict prompt changes nothing and asks again next run" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
       baselined dir
