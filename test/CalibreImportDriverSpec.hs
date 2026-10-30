@@ -13,7 +13,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Time (UTCTime(..))
 import Data.Time.Calendar (fromGregorian)
-import System.Directory (doesFileExist, listDirectory)
+import System.Directory (createDirectory, doesFileExist, listDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -22,7 +22,7 @@ import Libri.CLI.CalibreImport
 import Libri.Storage.CalibreImport (CalibreLibrary(..))
 import Libri.Storage.CalibreSync
 import Libri.Storage.Yaml (deleteBook, loadBooksWithErrors, saveBook)
-import Libri.Types (Book(..), BookId, Config(..), LibriError, defaultConfig)
+import Libri.Types (Book(..), BookId, Config(..), LibriError(..), defaultConfig)
 
 -- ---------------------------------------------------------------------------
 -- Fixtures
@@ -97,12 +97,12 @@ tshow = T.pack . show
 -- | Run the import with scripted answers; returns the result and the
 -- prompts that were asked (including those that hit EOF).
 runWith :: FilePath -> [Text] -> CalibreLibrary
-        -> IO (Either LibriError ImportSummary, [Text])
+        -> IO (Either ImportFailure ImportSummary, [Text])
 runWith dir answers lib = (\(r, ps, _) -> (r, ps)) <$> runFull dir answers lib
 
 -- | As 'runWith', also returning the printed lines.
 runFull :: FilePath -> [Text] -> CalibreLibrary
-        -> IO (Either LibriError ImportSummary, [Text], [Text])
+        -> IO (Either ImportFailure ImportSummary, [Text], [Text])
 runFull dir answers lib = do
   ansRef <- newIORef answers
   promptRef <- newIORef []
@@ -485,6 +485,18 @@ spec = describe "Calibre import driver" $ do
       length ps `shouldBe` 2
       (sumAdded s, sumUnchanged s, sumIgnored s) `shouldBe` (0, 2, 1)
       snapshot dir >>= (`shouldBe` snap0)
+
+  it "a failed sync save still reports what was done" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      let path = dir </> "calibre-sync.yaml"
+      createDirectory path
+      (r, _) <- runWith dir [] (library [calBook 1, calBook 2, calBook 3])
+      case r of
+        Left (ImportFailure (WriteError p _) (Just s)) -> do
+          p `shouldBe` path
+          sumAdded s `shouldBe` 3
+        other -> expectationFailure ("expected a write failure with a summary, got " <> show other)
+      length <$> loaded dir >>= (`shouldBe` 3)
 
   it "aborts without writing anything when a book file is corrupt" $
     withSystemTempDirectory "libri-drv" $ \dir -> do

@@ -28,7 +28,7 @@ import Libri.CLI.Tags (runTagRename, runTagDelete)
 import Libri.ISBN.OpenLibrary (fetchByISBN, fetchByISBNWith, newISBNManager)
 import Network.HTTP.Client (Manager)
 import Libri.Search.Fuzzy (searchBooks)
-import Libri.CLI.CalibreImport (ImportSummary (..), runCalibreImport)
+import Libri.CLI.CalibreImport (ImportFailure (..), ImportSummary (..), runCalibreImport)
 import Libri.Storage.CalibreImport (importFromCalibre)
 import Libri.Storage.Index (BookIndex, buildIndex, lookupByISBN, lookupById)
 import Libri.Storage.Yaml
@@ -446,14 +446,17 @@ runImportCalibre cfg path = do
             fmap (T.strip . T.pack) <$> readLineSafe
       r <- runCalibreImport cfg ask TIO.putStrLn lib
       case r of
-        Left err -> do
+        Left (ImportFailure err done) -> do
+          forM_ done printSummary
           hPutStrLn stderr $ "Import failed: " <> show err
           exitFailure
         Right s -> do
-          TIO.putStrLn ""
-          forM_ (summaryLines s) TIO.putStrLn
+          printSummary s
           when (sumUnanswered s > 0 || sumFailures s > 0) exitFailure
   where
+    printSummary s = do
+      TIO.putStrLn ""
+      forM_ (summaryLines s) TIO.putStrLn
     summaryLines s =
       [ T.pack (show n) <> " " <> label
       | (n, label) <-

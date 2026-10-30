@@ -7,6 +7,7 @@
 module Libri.CLI.CalibreImport
   ( Ask
   , ImportSummary(..)
+  , ImportFailure(..)
   , runCalibreImport
   ) where
 
@@ -40,21 +41,28 @@ data ImportSummary = ImportSummary
   , sumUnanswered, sumFailures :: Int
   } deriving (Show, Eq)
 
+-- | Why an import run failed, and what it had done by then, if anything.
+data ImportFailure = ImportFailure
+  { failError :: LibriError
+  , failDone  :: Maybe ImportSummary
+  } deriving (Show, Eq)
+
 -- | Import a Calibre library into the collection, asking the user through
 -- the 'Ask' and reporting through the line printer.  Aborts without writing
--- anything if a book file or the sync state cannot be read.  If the run is
--- interrupted (e.g. Ctrl-C), the sync state reached so far is saved and the
--- exception is rethrown.
+-- anything if a book file or the sync state cannot be read.  If the sync
+-- state cannot be saved at the end, the failure carries the summary of
+-- what was done.  If the run is interrupted (e.g. Ctrl-C), the sync state
+-- reached so far is saved and the exception is rethrown.
 runCalibreImport :: Config -> Ask -> (Text -> IO ()) -> CalibreLibrary
-                 -> IO (Either LibriError ImportSummary)
+                 -> IO (Either ImportFailure ImportSummary)
 runCalibreImport cfg ask' say' lib = do
   (errs, coll) <- loadBooksWithErrors cfg
   if not (null errs)
-    then pure (Left (CalibreImportError
+    then pure (Left (ImportFailure (CalibreImportError
       ("unreadable book files, nothing imported: "
-        <> T.unpack (T.intercalate ", " (map (T.pack . fst) errs)))))
+        <> T.unpack (T.intercalate ", " (map (T.pack . fst) errs)))) Nothing))
     else loadSyncState cfg >>= \case
-      Left e -> pure (Left e)
+      Left e -> pure (Left (ImportFailure e Nothing))
       Right st0 -> do
         let uuid = clUuid lib
             known = Map.lookup uuid (syncLibraries st0)
@@ -76,13 +84,16 @@ runCalibreImport cfg ask' say' lib = do
               | otherwise = st
         ref <- newIORef run0
         runReaderT (driver env lib firstImport homeUnknown) ref `onException` do
+          say' ""  -- the interrupt usually lands on an open prompt line
           final <- readIORef ref
           save (interrupted (rSync final)) >>= \case
             Right () -> say' "Interrupted: the answers given so far are saved."
             Left e -> say' ("Interrupted, and the answers could not be saved: "
                             <> T.pack (show e))
         final <- readIORef ref
-        fmap (const (rSum final)) <$> save (rSync final)
+        save (rSync final) >>= \case
+          Left e   -> pure (Left (ImportFailure e (Just (rSum final))))
+          Right () -> pure (Right (rSum final))
 
 -- | Record every incoming book that has no sync entry as pending.
 pendUnseen :: Text -> [Book] -> SyncState -> SyncState

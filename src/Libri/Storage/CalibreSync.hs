@@ -248,5 +248,5 @@ saveSyncState cfg st = do
   path <- syncFilePath cfg
   r <- try (encodeFileAtomic path st)
   pure $ case r of
-    Left (e :: IOError) -> Left (ParseError path (show e))
+    Left (e :: IOError) -> Left (WriteError path (show e))
     Right ()            -> Right ()

@@ -237,6 +237,7 @@ makeLenses ''AppState
 data LibriError
   = FileNotFound FilePath
   | ParseError FilePath String
+  | WriteError FilePath String
   | NetworkError String
   | ISBNNotFound Text
   | BookNotFound BookId

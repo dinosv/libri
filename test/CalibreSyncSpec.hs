@@ -8,6 +8,7 @@ import Data.Time.Calendar (fromGregorian)
 import qualified Data.Text.IO as TIO
 import Libri.Storage.CalibreSync
 import Libri.Types (LibriError(..), defaultConfig, Config(..))
+import System.Directory (createDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Libri.Types (Book(..))
@@ -125,6 +126,15 @@ syncSpec = describe "Calibre sync state" $ do
         Left (ParseError p _) -> p `shouldBe` path
         other -> expectationFailure ("expected ParseError, got " <> show other)
       TIO.readFile path `shouldReturn` bytes
+
+  it "reports a failed save as a write error" $
+    withSystemTempDirectory "libri-sync" $ \dir -> do
+      let path = dir </> "calibre-sync.yaml"
+      createDirectory path
+      r <- saveSyncState (defaultConfig { _dataDir = dir }) sampleState
+      case r of
+        Left (WriteError p _) -> p `shouldBe` path
+        other -> expectationFailure ("expected WriteError, got " <> show other)
 
   it "accepts an unquoted yes/no for home" $
     withSystemTempDirectory "libri-sync" $ \dir -> do
