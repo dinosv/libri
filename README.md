@@ -47,7 +47,7 @@ libri --import-calibre /path/to/calibre/library
 
 Re-importing is safe. Books already matched are compared with the Calibre
 copy, and libri asks before changing anything: books that are new or whose
-match is uncertain are listed for a decision (add, ignore or skip), and where
+match is uncertain are listed for a decision (add all, ignore all, or one by one), and where
 both sides have changed a field you choose which value to keep. Books you
 deleted in libri are not brought back unless you say so. Answers are
 remembered in `calibre-sync.yaml`, so questions are not repeated. If input
