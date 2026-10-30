@@ -20,7 +20,7 @@ import Test.Hspec
 import Libri.CLI.CalibreImport
 import Libri.Storage.CalibreImport (CalibreLibrary(..))
 import Libri.Storage.CalibreSync
-import Libri.Storage.Yaml (loadBooksWithErrors, saveBook)
+import Libri.Storage.Yaml (deleteBook, loadBooksWithErrors, saveBook)
 import Libri.Types (Book(..), BookId, Config(..), LibriError, defaultConfig)
 
 -- ---------------------------------------------------------------------------
@@ -256,6 +256,47 @@ spec = describe "Calibre import driver" $ do
           libriSide `shouldSatisfy` (not . T.null)
           libriSide `shouldNotBe` calibreSide
         other -> expectationFailure ("expected one comments line, got " <> show other)
+
+  it "later run: a new Calibre book is added without questions and mapped" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      baselined dir
+      (s, ps) <- runOk dir [] (library [calBook 1, calBook 2, calBook 3, calBook 4])
+      ps `shouldBe` []
+      (sumAdded s, sumUnchanged s, sumIgnored s, sumUnanswered s) `shouldBe` (1, 2, 1, 0)
+      bk <- bookById dir (_bookId (calBook 4))
+      _title bk `shouldBe` "Libro 4"
+      length <$> loaded dir >>= (`shouldBe` 3)
+      ls <- libSync dir
+      Map.lookup (refOf 4) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (_bookId (calBook 4)) (fieldPrints (calBook 4)))
+
+  it "later run: a mapped book deleted in libri is skipped, not re-added" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      baselined dir
+      gone <- bookById dir (libriId 1)
+      deleteBook (cfgFor dir) gone >>= either (fail . show) pure
+      snap0 <- snapshot dir
+      (s, ps) <- runOk dir [] (library [calBook 1, calBook 2, calBook 3])
+      ps `shouldBe` []
+      (sumDeletedInLibri s, sumAdded s, sumUnanswered s) `shouldBe` (1, 0, 0)
+      length <$> loaded dir >>= (`shouldBe` 1)
+      snapshot dir >>= (`shouldBe` snap0)
+
+  it "later run: [L] keeps libri for every remaining conflict, asking once" $
+    withSystemTempDirectory "libri-drv" $ \dir -> do
+      baselined dir
+      snap0 <- snapshot dir
+      let c1 = (calBook 1) { _comments = Just "Nuevo uno" }
+          c2 = (calBook 2) { _title = "Libro Dos" }
+      (s, ps) <- runOk dir ["L"] (library [c1, c2, calBook 3])
+      length ps `shouldBe` 1
+      (sumResolved s, sumUnanswered s) `shouldBe` (2, 0)
+      snapshot dir >>= (`shouldBe` snap0)
+      ls <- libSync dir
+      Map.lookup (refOf 1) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 1) (fieldPrints c1))
+      Map.lookup (refOf 2) (lsBooks ls)
+        `shouldBe` Just (SyncMapped (libriId 2) (fieldPrints c2))
 
   it "EOF at the conflict prompt changes nothing and asks again next run" $
     withSystemTempDirectory "libri-drv" $ \dir -> do
