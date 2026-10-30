@@ -28,7 +28,8 @@ import Libri.CLI.Tags (runTagRename, runTagDelete)
 import Libri.ISBN.OpenLibrary (fetchByISBN, fetchByISBNWith, newISBNManager)
 import Network.HTTP.Client (Manager)
 import Libri.Search.Fuzzy (searchBooks)
-import Libri.Storage.CalibreImport (CalibreLibrary (..), importFromCalibre)
+import Libri.CLI.CalibreImport (ImportSummary (..), runCalibreImport)
+import Libri.Storage.CalibreImport (importFromCalibre)
 import Libri.Storage.Index (BookIndex, buildIndex, lookupByISBN, lookupById)
 import Libri.Storage.Yaml
 import Libri.Types
@@ -195,7 +196,7 @@ importCommand :: Parser Command
 importCommand = CmdImportCalibre <$> strOption
   ( long "import-calibre"
  <> metavar "PATH"
- <> help "Import from Calibre library"
+ <> help "Import or re-import a Calibre library"
   )
 
 importIsbnTxtCommand :: Parser Command
@@ -429,34 +430,42 @@ runLocations cfg = do
       forM_ locs $ \loc ->
         TIO.putStrLn $ "  - " <> loc
 
--- | Import from Calibre
+-- | Import or re-import from Calibre
 runImportCalibre :: Config -> FilePath -> IO ()
 runImportCalibre cfg path = do
-  TIO.putStrLn $ "Importing from Calibre library: " <> T.pack path
+  TIO.putStrLn $ "Reading Calibre library: " <> T.pack path
   result <- importFromCalibre path
   case result of
     Left err -> do
       hPutStrLn stderr $ "Import failed: " <> show err
       exitFailure
     Right lib -> do
-      let bks = clBooks lib
-      TIO.putStrLn $ "Found " <> T.pack (show (length bks)) <> " books"
-      results <- mapM (saveBook cfg) bks
-
-      let successes = length [() | Right () <- results]
-          failures = length [() | Left _ <- results]
-
-      forM_ (zip bks results) $ \(book, saveResult) ->
-        case saveResult of
-          Left err ->
-            hPutStrLn stderr $ "Error saving '" <> T.unpack (book ^. title) <> "': " <> show err
-          Right () ->
-            TIO.putStrLn $ "  Imported: " <> (book ^. title)
-
-      TIO.putStrLn ""
-      TIO.putStrLn $ "Import complete! " <> T.pack (show successes) <> " books saved successfully"
-      when (failures > 0) $
-        TIO.putStrLn $ "  " <> T.pack (show failures) <> " books failed to save"
+      let ask prompt = do
+            TIO.putStr prompt
+            hFlush stdout
+            fmap (T.strip . T.pack) <$> readLineSafe
+      r <- runCalibreImport cfg ask TIO.putStrLn lib
+      case r of
+        Left err -> do
+          hPutStrLn stderr $ "Import failed: " <> show err
+          exitFailure
+        Right s -> do
+          TIO.putStrLn ""
+          forM_ (summaryLines s) TIO.putStrLn
+          when (sumUnanswered s > 0 || sumFailures s > 0) exitFailure
+  where
+    summaryLines s =
+      [ T.pack (show n) <> " " <> label
+      | (n, label) <-
+          [ (sumAdded s, "added")
+          , (sumUnchanged s, "unchanged")
+          , (sumResolved s, "resolved")
+          , (sumIgnored s, "ignored")
+          , (sumDeletedInLibri s, "deleted in libri, left alone")
+          , (sumUnanswered s, "left unanswered")
+          , (sumFailures s, "failed")
+          ]
+      , n > 0 ]
 
 -- | List all books
 runList :: Config -> IO ()

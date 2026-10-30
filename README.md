@@ -6,7 +6,7 @@ A TUI/CLI tool for managing a physical book collection.
 
 - **TUI Interface**: Browse and search your book collection with a terminal UI
 - **CLI Commands**: Quick operations via command-line flags
-- **Calibre Import**: One-time migration from Calibre library
+- **Calibre import and safe re-import**: Import a Calibre library, and run it again later without losing edits made in libri
 - **ISBN Lookup**: Fetch book metadata from Open Library
 - **Fuzzy Search**: Find books even with typos
 - **YAML Storage**: Human-readable, git-friendly book files
@@ -44,6 +44,15 @@ libri --locations
 # Import from Calibre
 libri --import-calibre /path/to/calibre/library
 ```
+
+Re-importing is safe. Books already matched are compared with the Calibre
+copy, and libri asks before changing anything: books that are new or whose
+match is uncertain are listed for a decision (add, ignore or skip), and where
+both sides have changed a field you choose which value to keep. Books you
+deleted in libri are not brought back unless you say so. Answers are
+remembered in `calibre-sync.yaml`, so questions are not repeated. If input
+ends before every question is answered, the command exits with an error and
+asks again next time.
 
 ## Keyboard Shortcuts (TUI)
 

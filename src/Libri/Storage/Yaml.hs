@@ -13,7 +13,6 @@ module Libri.Storage.Yaml
   , deleteBook
   , encodeFileAtomic
     -- * Merging
-  , mergeBooks
     -- * Directory Management
   , initDataDir
   , getDataDir
@@ -24,7 +23,6 @@ import Control.Exception (try)
 import Control.Monad (forM, when, void)
 import Data.Either (lefts, rights)
 import Data.List (isSuffixOf)
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.Time (getCurrentTime)
 import Data.Yaml (ToJSON, decodeFileEither, encodeFile)
@@ -162,30 +160,6 @@ saveBook cfg book = do
   case result of
     Left (e :: IOError) -> pure $ Left $ ParseError path (show e)
     Right () -> pure $ Right ()
-
--- | Merge a Calibre book with an existing libri book
--- Calibre data wins for most fields, but preserves:
--- - _location (libri-only)
--- - _added (original timestamp)
--- - non-identifier custom fields
-mergeBooks :: Book -> Book -> Book
-mergeBooks calibre existing =
-  let -- Preserve non-identifier custom fields from existing
-      existingNonIds = Map.filterWithKey
-        (\k _ -> not (T.isPrefixOf "identifier:" k))
-        (_custom existing)
-      -- Get identifier fields from calibre
-      calibreIds = Map.filterWithKey
-        (\k _ -> T.isPrefixOf "identifier:" k)
-        (_custom calibre)
-      -- Merge: existing non-ids + calibre ids
-      mergedCustom = Map.union calibreIds existingNonIds
-   in calibre
-        { _bookId = _bookId existing
-        , _location = _location existing
-        , _added = _added existing
-        , _custom = mergedCustom
-        }
 
 -- | Delete a book's YAML file (canonical, older slug or legacy name)
 deleteBook :: Config -> Book -> IO (Either LibriError ())
